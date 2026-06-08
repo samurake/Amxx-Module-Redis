@@ -212,6 +212,41 @@ native redis_async_del_key(const key[]);
 native redis_async_hdel_field(const key[], const field[]);
 
 /*
+ * @note    Enqueue a GET command on the Redis worker thread.
+ *          Result is delivered on the main thread through Redis_Async_OnResult.
+ *
+ * @param   key[]       key name.
+ * @param   request_id  caller-defined id echoed back in the result forward.
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_get_string(const key[], request_id = 0);
+
+/*
+ * @note    Enqueue a GET command on the Redis worker thread. The callback
+ *          returns the value as a string so callers can parse as needed.
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_get_integer(const key[], request_id = 0);
+
+/*
+ * @note    Enqueue a HGET command on the Redis worker thread.
+ *          Result is delivered on the main thread through Redis_Async_OnResult.
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_hget_string(const key[], const field[], request_id = 0);
+
+/*
+ * @note    Enqueue a HGET command on the Redis worker thread. The callback
+ *          returns the value as a string so callers can parse as needed.
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_hget_integer(const key[], const field[], request_id = 0);
+
+/*
  * @note    Returns the current number of queued async commands.
  */
 native redis_async_queue_size();
@@ -229,6 +264,18 @@ native redis_async_set_queue_limit(limit);
  * @return  0 if an error exists. -1 if no error has been recorded.
  */
 native redis_async_last_error(output[], maxlength);
+
+/*
+ * @note    Called on the AMXX main thread when an async GET/HGET result is ready.
+ *
+ * @param   request_id  caller-defined id from redis_async_get_* / redis_async_hget_*.
+ * @param   command[]   "get" or "hget".
+ * @param   status      0 = value found, 1 = Redis nil/missing value, -1 = worker error.
+ * @param   key[]       key name.
+ * @param   field[]     hash field for hget, empty for get.
+ * @param   value[]     result value on status 0, error message on status -1.
+ */
+forward Redis_Async_OnResult(request_id, command[], status, key[], field[], value[]);
 
 /*
  * @note	When a message is received via the PUB/SUB command, this function is called as a callback.

@@ -35,7 +35,7 @@ I use ambuild for builds.
 See ![redis.inc](redis.inc) and ![redis_test.sma](redis_test.sma)
 
 ---
-### Async write queue:
+### Async queue:
 The original Redis natives are kept for compatibility and still execute on the
 AMXX/game thread. Use the `redis_async_*` natives for runtime paths that must not
 wait on network I/O, such as analytics publishing or write-behind snapshots.
@@ -51,7 +51,7 @@ redis_async_publish("amxx:server_analytics", payload);
 redis_async_hset_string("amxx:server_analytics:events:2026-06-08", event_id, payload);
 ```
 
-Available async write natives:
+Available async write/read natives:
 
 ```pawn
 redis_async_publish(const channel[], const message[]);
@@ -61,6 +61,10 @@ redis_async_set_string(const key[], const value[], const ttl = 0, const type = 0
 redis_async_set_integer(const key[], const value, const ttl = 0, const type = 0, const keepttl = 0);
 redis_async_del_key(const key[]);
 redis_async_hdel_field(const key[], const field[]);
+redis_async_get_string(const key[], request_id = 0);
+redis_async_get_integer(const key[], request_id = 0);
+redis_async_hget_string(const key[], const field[], request_id = 0);
+redis_async_hget_integer(const key[], const field[], request_id = 0);
 redis_async_queue_size();
 redis_async_set_queue_limit(limit);
 redis_async_last_error(output[], maxlength);
@@ -70,8 +74,41 @@ Return value is `0` when the command is queued and `-1` when Redis is not ready
 or the queue is full. The worker owns a separate Redis connection, so it does not
 share redis-plus-plus connection state with the game thread.
 
-This is not a read callback API yet. Any future `GET`/`HGET` async API should
-dispatch Pawn callbacks back on the AMXX main thread, not from the worker thread.
+Async `GET`/`HGET` results are dispatched back on the AMXX main thread through a
+global forward:
+
+```pawn
+#define REQ_PLAYER_CACHE 1001
+
+redis_async_hget_string("player:cache", authid, REQ_PLAYER_CACHE);
+
+public Redis_Async_OnResult(request_id, command[], status, key[], field[], value[])
+{
+    if (request_id != REQ_PLAYER_CACHE)
+    {
+        return;
+    }
+
+    if (status == 0)
+    {
+        server_print("Redis value: %s", value);
+    }
+    else if (status == 1)
+    {
+        server_print("Redis value missing for %s/%s", key, field);
+    }
+    else
+    {
+        server_print("Redis async error: %s", value);
+    }
+}
+```
+
+The result status contract is:
+
+- `0`: value found.
+- `1`: Redis nil/missing value.
+- `-1`: worker error, with the error message in `value`.
 
 ---
 ### A little test:

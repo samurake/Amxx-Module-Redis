@@ -26,6 +26,10 @@ static cell Native_RedisAsyncSetString(AMX* amx, cell* params) {return redis_asy
 static cell Native_RedisAsyncSetInteger(AMX* amx, cell* params) {return redis_async_set_integer(amx, params); }
 static cell Native_RedisAsyncDeleteKey(AMX* amx, cell* params) {return redis_async_del_key(amx, params); }
 static cell Native_RedisAsyncHDeleteField(AMX* amx, cell* params) {return redis_async_hdel_field(amx, params); }
+static cell Native_RedisAsyncGetString(AMX* amx, cell* params) {return redis_async_get_string(amx, params); }
+static cell Native_RedisAsyncGetInteger(AMX* amx, cell* params) {return redis_async_get_integer(amx, params); }
+static cell Native_RedisAsyncHGetString(AMX* amx, cell* params) {return redis_async_hget_string(amx, params); }
+static cell Native_RedisAsyncHGetInteger(AMX* amx, cell* params) {return redis_async_hget_integer(amx, params); }
 static cell Native_RedisAsyncQueueSize(AMX* amx, cell* params) {return redis_async_queue_size(amx, params); }
 static cell Native_RedisAsyncSetQueueLimit(AMX* amx, cell* params) {return redis_async_set_queue_limit(amx, params); }
 static cell Native_RedisAsyncLastError(AMX* amx, cell* params) {return redis_async_last_error(amx, params); }
@@ -54,6 +58,10 @@ AMX_NATIVE_INFO g_natives[] =
 	{"redis_async_set_integer", Native_RedisAsyncSetInteger},
 	{"redis_async_del_key", Native_RedisAsyncDeleteKey},
 	{"redis_async_hdel_field", Native_RedisAsyncHDeleteField},
+	{"redis_async_get_string", Native_RedisAsyncGetString},
+	{"redis_async_get_integer", Native_RedisAsyncGetInteger},
+	{"redis_async_hget_string", Native_RedisAsyncHGetString},
+	{"redis_async_hget_integer", Native_RedisAsyncHGetInteger},
 	{"redis_async_queue_size", Native_RedisAsyncQueueSize},
 	{"redis_async_set_queue_limit", Native_RedisAsyncSetQueueLimit},
 	{"redis_async_last_error", Native_RedisAsyncLastError},

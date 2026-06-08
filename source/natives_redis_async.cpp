@@ -10,12 +10,15 @@ namespace
         HSet,
         Set,
         Del,
-        HDel
+        HDel,
+        Get,
+        HGet
     };
 
     struct AsyncCommand
     {
         AsyncCommandType type;
+        int request_id = 0;
         std::string key;
         std::string field;
         std::string value;
@@ -24,7 +27,18 @@ namespace
         bool keepttl = false;
     };
 
+    struct AsyncResult
+    {
+        int request_id = 0;
+        std::string command;
+        int status = -1;
+        std::string key;
+        std::string field;
+        std::string value;
+    };
+
     std::deque<AsyncCommand> g_async_queue;
+    std::deque<AsyncResult> g_async_results;
     std::mutex g_async_mutex;
     std::condition_variable g_async_cv;
     std::thread* g_async_worker = nullptr;
@@ -36,6 +50,29 @@ namespace
     {
         std::lock_guard<std::mutex> lock(g_async_mutex);
         g_async_last_error = message;
+    }
+
+    void enqueue_async_result(const AsyncResult& result)
+    {
+        std::lock_guard<std::mutex> lock(g_async_mutex);
+        g_async_results.push_back(result);
+    }
+
+    void enqueue_async_error_result(const AsyncCommand& command, const std::string& message)
+    {
+        if (command.type != AsyncCommandType::Get && command.type != AsyncCommandType::HGet)
+        {
+            return;
+        }
+
+        AsyncResult result;
+        result.request_id = command.request_id;
+        result.command = command.type == AsyncCommandType::Get ? "get" : "hget";
+        result.status = -1;
+        result.key = command.key;
+        result.field = command.field;
+        result.value = message;
+        enqueue_async_result(result);
     }
 
     bool enqueue_async_command(const AsyncCommand& command)
@@ -90,6 +127,51 @@ namespace
             case AsyncCommandType::HDel:
                 redis.hdel(command.key, command.field);
                 break;
+
+            case AsyncCommandType::Get:
+            {
+                AsyncResult result;
+                result.request_id = command.request_id;
+                result.command = "get";
+                result.key = command.key;
+
+                OptionalString value = redis.get(command.key);
+                if (value)
+                {
+                    result.status = 0;
+                    result.value = *value;
+                }
+                else
+                {
+                    result.status = 1;
+                }
+
+                enqueue_async_result(result);
+                break;
+            }
+
+            case AsyncCommandType::HGet:
+            {
+                AsyncResult result;
+                result.request_id = command.request_id;
+                result.command = "hget";
+                result.key = command.key;
+                result.field = command.field;
+
+                OptionalString value = redis.hget(command.key, command.field);
+                if (value)
+                {
+                    result.status = 0;
+                    result.value = *value;
+                }
+                else
+                {
+                    result.status = 1;
+                }
+
+                enqueue_async_result(result);
+                break;
+            }
         }
     }
 
@@ -125,20 +207,24 @@ namespace
                 catch (const Error& e)
                 {
                     set_async_error(e.what());
+                    enqueue_async_error_result(command, e.what());
                 }
                 catch (const std::exception& e)
                 {
                     set_async_error(e.what());
+                    enqueue_async_error_result(command, e.what());
                 }
             }
         }
         catch (const Error& e)
         {
             set_async_error(e.what());
+            g_async_running.store(false);
         }
         catch (const std::exception& e)
         {
             set_async_error(e.what());
+            g_async_running.store(false);
         }
     }
 }
@@ -177,6 +263,41 @@ void redis_stop_async_worker()
 
     std::lock_guard<std::mutex> lock(g_async_mutex);
     g_async_queue.clear();
+    g_async_results.clear();
+}
+
+void redis_dispatch_async_results()
+{
+    if (ForwardRedisAsyncOnResult < 0)
+    {
+        return;
+    }
+
+    for (int i = 0; i < 64; i++)
+    {
+        AsyncResult result;
+
+        {
+            std::lock_guard<std::mutex> lock(g_async_mutex);
+            if (g_async_results.empty())
+            {
+                return;
+            }
+
+            result = g_async_results.front();
+            g_async_results.pop_front();
+        }
+
+        MF_ExecuteForward(
+            ForwardRedisAsyncOnResult,
+            result.request_id,
+            result.command.c_str(),
+            result.status,
+            result.key.c_str(),
+            result.field.c_str(),
+            result.value.c_str()
+        );
+    }
 }
 
 // native redis_async_publish(const channel[], const message[]);
@@ -268,6 +389,43 @@ cell redis_async_hdel_field(AMX* amx, cell* params)
     command.field = MF_GetAmxString(amx, params[2], 1, &len);
 
     return enqueue_async_command(command) ? 0 : -1;
+}
+
+// native redis_async_get_string(const key[], request_id = 0);
+cell redis_async_get_string(AMX* amx, cell* params)
+{
+    int len = 0;
+    AsyncCommand command;
+    command.type = AsyncCommandType::Get;
+    command.key = MF_GetAmxString(amx, params[1], 0, &len);
+    command.request_id = params[2];
+
+    return enqueue_async_command(command) ? 0 : -1;
+}
+
+// native redis_async_get_integer(const key[], request_id = 0);
+cell redis_async_get_integer(AMX* amx, cell* params)
+{
+    return redis_async_get_string(amx, params);
+}
+
+// native redis_async_hget_string(const key[], const field[], request_id = 0);
+cell redis_async_hget_string(AMX* amx, cell* params)
+{
+    int len = 0;
+    AsyncCommand command;
+    command.type = AsyncCommandType::HGet;
+    command.key = MF_GetAmxString(amx, params[1], 0, &len);
+    command.field = MF_GetAmxString(amx, params[2], 1, &len);
+    command.request_id = params[3];
+
+    return enqueue_async_command(command) ? 0 : -1;
+}
+
+// native redis_async_hget_integer(const key[], const field[], request_id = 0);
+cell redis_async_hget_integer(AMX* amx, cell* params)
+{
+    return redis_async_hget_string(amx, params);
 }
 
 // native redis_async_queue_size();
