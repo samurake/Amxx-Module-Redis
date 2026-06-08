@@ -18,6 +18,16 @@
  */
 native redis_connect(const hostip[], const port = 6379, const username[] = "", const password[] = "");
 
+/**
+ * @note    Read the last Redis module error, usually a connection/auth/worker failure.
+ *
+ * @param   output[]    Buffer receiving the last error message.
+ * @param   maxlength   Maximum output length.
+ *
+ * @return  Length of the stored error message.
+ */
+native redis_last_error(output[], maxlength);
+
 /*
  * @note	When using the Pub/Sub command, register a subscriber channel.
  * 

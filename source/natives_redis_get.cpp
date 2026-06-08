@@ -10,9 +10,27 @@ cell redis_get_string(AMX *amx, cell *params)
 
 	if (g_redis != NULL)
 	{
-		OptionalString value = g_redis->get(key);
-		const char *result = convertToCString(value);
-		MF_SetAmxString(amx, params[2], result, params[3]);
+		try
+		{
+			OptionalString value = g_redis->get(key);
+			const char *result = convertToCString(value);
+			MF_SetAmxString(amx, params[2], result ? result : "", params[3]);
+		}
+		catch (const Error& e)
+		{
+			redis_set_last_error(e.what());
+			return -1;
+		}
+		catch (const std::exception& e)
+		{
+			redis_set_last_error(e.what());
+			return -1;
+		}
+		catch (...)
+		{
+			redis_set_last_error("unknown Redis get error");
+			return -1;
+		}
 	}
 	else
 		return -1;
@@ -28,14 +46,32 @@ cell redis_get_integer(AMX *amx, cell *params)
 	int iResult = 0;
 	if (g_redis != NULL)
 	{
-		OptionalString value = g_redis->get(key);
-		std::string result = value.value();
 		try
 		{
+			OptionalString value = g_redis->get(key);
+			if (!value)
+			{
+				return 0;
+			}
+
+			std::string result = value.value();
 			iResult = std::stoi(result);
 		}
-		catch (const Error &e)
+		catch (const Error& e)
 		{
+			redis_set_last_error(e.what());
+			iResult = 0;
+			return 0;
+		}
+		catch (const std::exception& e)
+		{
+			redis_set_last_error(e.what());
+			iResult = 0;
+			return 0;
+		}
+		catch (...)
+		{
+			redis_set_last_error("unknown Redis integer get error");
 			iResult = 0;
 			return 0;
 		}

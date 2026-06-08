@@ -2,7 +2,7 @@
 ### Description:
 > This is a module for amxmodx that allows operations from HLDS to the Redis data store.
 
-Current fork version: `0.1.0-async`.
+Current fork version: `0.1.1-async`.
 
 Original author: Aoi.Kagase. Async queue maintainer: samurake.
 
@@ -77,6 +77,15 @@ redis_async_last_error(output[], maxlength);
 Return value is `0` when the command is queued and `-1` when Redis is not ready
 or the queue is full. The worker owns a separate Redis connection, so it does not
 share redis-plus-plus connection state with the game thread.
+
+`redis_connect()` and all Redis natives catch Redis/client exceptions and return
+`-1` on failure instead of allowing an exception to escape into HLDS. Plugins can
+read the last module error with:
+
+```pawn
+new error[192];
+redis_last_error(error, charsmax(error));
+```
 
 Async `GET`/`HGET` results are dispatched back on the AMXX main thread through a
 global forward:

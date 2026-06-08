@@ -8,10 +8,28 @@ cell redis_delete_key(AMX *amx, cell *params)
 	int len = 0;
 	std::string key = MF_GetAmxString(amx, params[1], 0, &len);
 
-	if (g_redis != NULL)
-		g_redis->del(key);
-	else
+	if (g_redis == NULL)
 		return -1;
+
+	try
+	{
+		g_redis->del(key);
+	}
+	catch (const Error& e)
+	{
+		redis_set_last_error(e.what());
+		return -1;
+	}
+	catch (const std::exception& e)
+	{
+		redis_set_last_error(e.what());
+		return -1;
+	}
+	catch (...)
+	{
+		redis_set_last_error("unknown Redis del error");
+		return -1;
+	}
 
 	return 0;
 }
@@ -23,10 +41,28 @@ cell redis_hdelete_field(AMX *amx, cell *params)
 	std::string key = MF_GetAmxString(amx, params[1], 0, &len);
 	std::string field = MF_GetAmxString(amx, params[2], 1, &len);
 
-	if (g_redis != NULL)
-		g_redis->hdel(key, field);
-	else
+	if (g_redis == NULL)
 		return -1;
+
+	try
+	{
+		g_redis->hdel(key, field);
+	}
+	catch (const Error& e)
+	{
+		redis_set_last_error(e.what());
+		return -1;
+	}
+	catch (const std::exception& e)
+	{
+		redis_set_last_error(e.what());
+		return -1;
+	}
+	catch (...)
+	{
+		redis_set_last_error("unknown Redis hdel error");
+		return -1;
+	}
 
 	return 0;
 }

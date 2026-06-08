@@ -16,18 +16,36 @@ cell redis_set_string(AMX *amx, cell *params)
 
     if (g_redis != nullptr)
     {
-        bool success = false;
-
-        if (keepttl)
+        try
         {
-            success = g_redis->set(key, value, keepttl, type);
-        }
-        else
-        {
-            success = g_redis->set(key, value, std::chrono::seconds(ttl), type);
-        }
+            bool success = false;
 
-        return success ? 0 : -1;
+            if (keepttl)
+            {
+                success = g_redis->set(key, value, keepttl, type);
+            }
+            else
+            {
+                success = g_redis->set(key, value, std::chrono::seconds(ttl), type);
+            }
+
+            return success ? 0 : -1;
+        }
+        catch (const Error& e)
+        {
+            redis_set_last_error(e.what());
+            return -1;
+        }
+        catch (const std::exception& e)
+        {
+            redis_set_last_error(e.what());
+            return -1;
+        }
+        catch (...)
+        {
+            redis_set_last_error("unknown Redis set error");
+            return -1;
+        }
     }
 
     return -1;
@@ -48,18 +66,36 @@ cell redis_set_integer(AMX *amx, cell *params)
 
     if (g_redis != nullptr)
     {
-        bool success = false;
-
-        if (keepttl)
+        try
         {
-            success = g_redis->set(key, std::to_string(value), keepttl, type);
-        }
-        else
-        {
-            success = g_redis->set(key, std::to_string(value), std::chrono::seconds(ttl), type);
-        }
+            bool success = false;
 
-        return success ? 0 : -1;
+            if (keepttl)
+            {
+                success = g_redis->set(key, std::to_string(value), keepttl, type);
+            }
+            else
+            {
+                success = g_redis->set(key, std::to_string(value), std::chrono::seconds(ttl), type);
+            }
+
+            return success ? 0 : -1;
+        }
+        catch (const Error& e)
+        {
+            redis_set_last_error(e.what());
+            return -1;
+        }
+        catch (const std::exception& e)
+        {
+            redis_set_last_error(e.what());
+            return -1;
+        }
+        catch (...)
+        {
+            redis_set_last_error("unknown Redis set error");
+            return -1;
+        }
     }
 
     return -1;

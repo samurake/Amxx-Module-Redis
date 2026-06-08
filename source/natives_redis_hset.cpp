@@ -10,10 +10,28 @@ cell redis_hset_string(AMX *amx, cell *params)
 	std::string field = MF_GetAmxString(amx, params[2], 1, &len);
 	std::string value = MF_GetAmxString(amx, params[3], 2, &len);
 
-	if (g_redis != NULL)
-		g_redis->hset(key, field, value);
-	else
+	if (g_redis == NULL)
 		return -1;
+
+	try
+	{
+		g_redis->hset(key, field, value);
+	}
+	catch (const Error& e)
+	{
+		redis_set_last_error(e.what());
+		return -1;
+	}
+	catch (const std::exception& e)
+	{
+		redis_set_last_error(e.what());
+		return -1;
+	}
+	catch (...)
+	{
+		redis_set_last_error("unknown Redis hset error");
+		return -1;
+	}
 
 	return 0;
 }
@@ -26,10 +44,28 @@ cell redis_hset_integer(AMX *amx, cell *params)
 	std::string field = MF_GetAmxString(amx, params[2], 1, &len);
 	int value = params[3];
 
-	if (g_redis != NULL)
-		g_redis->hset(key, field, std::to_string(value));
-	else
+	if (g_redis == NULL)
 		return -1;
+
+	try
+	{
+		g_redis->hset(key, field, std::to_string(value));
+	}
+	catch (const Error& e)
+	{
+		redis_set_last_error(e.what());
+		return -1;
+	}
+	catch (const std::exception& e)
+	{
+		redis_set_last_error(e.what());
+		return -1;
+	}
+	catch (...)
+	{
+		redis_set_last_error("unknown Redis hset error");
+		return -1;
+	}
 
 	return 0;
 }

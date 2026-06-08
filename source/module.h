@@ -6,7 +6,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <exception>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #define DEBUG_LOGGING 0
@@ -29,7 +31,9 @@ extern std::thread* th_subscriber;
 extern sw::redis::Subscriber* sub;
 
 extern const char* convertToCString(const OptionalString& optStr);
+extern void redis_set_last_error(const char* message);
 extern cell	redis_connect(AMX *amx, cell *params);
+extern cell redis_last_error(AMX *amx, cell *params);
 
 extern cell redis_delete_key(AMX *amx, cell *params);
 extern cell redis_hdelete_field(AMX *amx, cell *params);

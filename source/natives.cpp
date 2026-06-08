@@ -1,6 +1,7 @@
 #include "module.h"
 
 static cell	Native_RedisConnect(AMX *amx, cell *params)     {return redis_connect(amx, params);}
+static cell Native_RedisLastError(AMX *amx, cell *params)  {return redis_last_error(amx, params);}
 
 static cell Native_RedisDeleteKey(AMX *amx, cell *params)   {return redis_delete_key(amx, params);}
 static cell Native_RedisHDeleteField(AMX *amx, cell *params){return redis_hdelete_field(amx, params);}
@@ -39,6 +40,7 @@ static cell Native_RedisRegisterSubscriber(AMX* amx, cell* params)	{return redis
 AMX_NATIVE_INFO g_natives[] =
 {
 	{"redis_connect", Native_RedisConnect},
+	{"redis_last_error", Native_RedisLastError},
 	{"redis_set_string", Native_RedisSetString},
 	{"redis_set_integer", Native_RedisSetInteger},
 	{"redis_get_string", Native_RedisGetString},

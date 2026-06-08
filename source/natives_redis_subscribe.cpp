@@ -11,11 +11,33 @@ cell redis_register_subscriber_forward(bool hasOnMessage)
 {
 	if (hasOnMessage)
 	{
-		channels.clear();
-		g_subscriber_options = g_connection_options;
-		g_subscriber_options.socket_timeout = std::chrono::milliseconds(300);
-		g_subscriber_redis = new Redis(g_subscriber_options);
-		sub = new Subscriber(g_subscriber_redis->subscriber());
+		try
+		{
+			channels.clear();
+			g_subscriber_options = g_connection_options;
+			g_subscriber_options.socket_timeout = std::chrono::milliseconds(300);
+			g_subscriber_redis = new Redis(g_subscriber_options);
+			g_subscriber_redis->ping();
+			sub = new Subscriber(g_subscriber_redis->subscriber());
+		}
+		catch (const Error& e)
+		{
+			redis_set_last_error(e.what());
+			MF_Log("[Redis] subscriber connection failed: %s", e.what());
+			return -1;
+		}
+		catch (const std::exception& e)
+		{
+			redis_set_last_error(e.what());
+			MF_Log("[Redis] subscriber connection failed: %s", e.what());
+			return -1;
+		}
+		catch (...)
+		{
+			redis_set_last_error("unknown Redis subscriber connection error");
+			MF_Log("[Redis] subscriber connection failed: unknown Redis subscriber connection error");
+			return -1;
+		}
 
 		// Set callback functions.
 		sub->on_message([](std::string channel, std::string msg) {
@@ -83,8 +105,29 @@ cell redis_start_subscribe(bool hasOnMessage)
 
 	if (channels.size() > 0)
 	{
-		for (auto& ch : channels) {
-			sub->subscribe(ch);
+		if (sub == nullptr)
+		{
+			MF_Log("[WARN] REDIS SUBSCRIBER NOT CONNECTED.");
+			return -1;
+		}
+
+		try
+		{
+			for (auto& ch : channels) {
+				sub->subscribe(ch);
+			}
+		}
+		catch (const Error& e)
+		{
+			redis_set_last_error(e.what());
+			MF_Log("[Redis] subscribe failed: %s", e.what());
+			return -1;
+		}
+		catch (const std::exception& e)
+		{
+			redis_set_last_error(e.what());
+			MF_Log("[Redis] subscribe failed: %s", e.what());
+			return -1;
 		}
 
 		th_subscriber = new std::thread(consumeThread);
