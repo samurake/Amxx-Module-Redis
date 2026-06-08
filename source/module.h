@@ -3,6 +3,11 @@
 
 #include "amxxsdk/amxxmodule.h"
 #include "sw/redis++/redis++.h"
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 #define DEBUG_LOGGING 0
 
@@ -41,11 +46,23 @@ extern cell redis_hset_string(AMX *amx, cell *params);
 extern cell redis_hset_integer(AMX *amx, cell *params);
 
 extern cell redis_publish(AMX* amx, cell* params);
+extern cell redis_async_publish(AMX* amx, cell* params);
+extern cell redis_async_hset_string(AMX* amx, cell* params);
+extern cell redis_async_hset_integer(AMX* amx, cell* params);
+extern cell redis_async_set_string(AMX* amx, cell* params);
+extern cell redis_async_set_integer(AMX* amx, cell* params);
+extern cell redis_async_del_key(AMX* amx, cell* params);
+extern cell redis_async_hdel_field(AMX* amx, cell* params);
+extern cell redis_async_queue_size(AMX* amx, cell* params);
+extern cell redis_async_set_queue_limit(AMX* amx, cell* params);
+extern cell redis_async_last_error(AMX* amx, cell* params);
 
 extern cell redis_register_subscriber(AMX* amx, cell* params);
 
 extern cell redis_start_subscribe(bool hasOnMessage);
 extern cell redis_register_subscriber_forward(bool hasOnMessage);
+extern void redis_start_async_worker();
+extern void redis_stop_async_worker();
 
 extern bool UTIL_CheckForPublic(const char* publicname);
 

@@ -159,6 +159,78 @@ native redis_hdel_field(const key[], const field[]);
 native redis_publish(const channel[], const message[]);
 
 /*
+ * @note    Enqueue a PUBLISH command on the Redis worker thread.
+ *          This native returns after queueing and does not wait for Redis I/O.
+ *
+ * @param   channel[]   channel name.
+ * @param   message[]   value of message.
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_publish(const channel[], const message[]);
+
+/*
+ * @note    Enqueue a HSET command on the Redis worker thread. (for string)
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_hset_string(const key[], const field[], const value[]);
+
+/*
+ * @note    Enqueue a HSET command on the Redis worker thread. (for integer)
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_hset_integer(const key[], const field[], const value);
+
+/*
+ * @note    Enqueue a SET command on the Redis worker thread. (for string)
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_set_string(const key[], const value[], const ttl = 0, const type = 0, const keepttl = 0);
+
+/*
+ * @note    Enqueue a SET command on the Redis worker thread. (for integer)
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_set_integer(const key[], const value, const ttl = 0, const type = 0, const keepttl = 0);
+
+/*
+ * @note    Enqueue a DEL command on the Redis worker thread.
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_del_key(const key[]);
+
+/*
+ * @note    Enqueue a HDEL command on the Redis worker thread.
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_hdel_field(const key[], const field[]);
+
+/*
+ * @note    Returns the current number of queued async commands.
+ */
+native redis_async_queue_size();
+
+/*
+ * @note    Sets the maximum async queue depth. Default is 4096.
+ *
+ * @return  0 is success. -1 is invalid limit.
+ */
+native redis_async_set_queue_limit(limit);
+
+/*
+ * @note    Copies the last async worker error into output.
+ *
+ * @return  0 if an error exists. -1 if no error has been recorded.
+ */
+native redis_async_last_error(output[], maxlength);
+
+/*
  * @note	When a message is received via the PUB/SUB command, this function is called as a callback.
  * 
  * @param	channel[]	Channel name of the received message.

@@ -35,6 +35,45 @@ I use ambuild for builds.
 See ![redis.inc](redis.inc) and ![redis_test.sma](redis_test.sma)
 
 ---
+### Async write queue:
+The original Redis natives are kept for compatibility and still execute on the
+AMXX/game thread. Use the `redis_async_*` natives for runtime paths that must not
+wait on network I/O, such as analytics publishing or write-behind snapshots.
+
+The async API starts a worker thread after `redis_connect()` succeeds. Async
+write natives only copy Pawn parameters into a bounded queue and return:
+
+```pawn
+redis_connect("127.0.0.1", 6379, "", "secret");
+redis_async_set_queue_limit(8192);
+
+redis_async_publish("amxx:server_analytics", payload);
+redis_async_hset_string("amxx:server_analytics:events:2026-06-08", event_id, payload);
+```
+
+Available async write natives:
+
+```pawn
+redis_async_publish(const channel[], const message[]);
+redis_async_hset_string(const key[], const field[], const value[]);
+redis_async_hset_integer(const key[], const field[], const value);
+redis_async_set_string(const key[], const value[], const ttl = 0, const type = 0, const keepttl = 0);
+redis_async_set_integer(const key[], const value, const ttl = 0, const type = 0, const keepttl = 0);
+redis_async_del_key(const key[]);
+redis_async_hdel_field(const key[], const field[]);
+redis_async_queue_size();
+redis_async_set_queue_limit(limit);
+redis_async_last_error(output[], maxlength);
+```
+
+Return value is `0` when the command is queued and `-1` when Redis is not ready
+or the queue is full. The worker owns a separate Redis connection, so it does not
+share redis-plus-plus connection state with the game thread.
+
+This is not a read callback API yet. Any future `GET`/`HGET` async API should
+dispatch Pawn callbacks back on the AMXX main thread, not from the worker thread.
+
+---
 ### A little test:
 > I took a simple benchmark using Redis.<br/>
 > In one cycle, I did a SET/GET/DEL against a hash table and processed 100,000 cases.<br/>

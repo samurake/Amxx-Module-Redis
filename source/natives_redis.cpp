@@ -37,7 +37,15 @@ cell redis_connect(AMX *amx, cell *params)
 
 	try 
     {
+        if (g_redis)
+        {
+            redis_stop_async_worker();
+            delete g_redis;
+            g_redis = nullptr;
+        }
+
         g_redis = new Redis(g_connection_options);
+        redis_start_async_worker();
 
     } catch (const Error &e) {
 		MF_LogError(amx, AMX_ERR_NATIVE, "Redis Connecting Error.");

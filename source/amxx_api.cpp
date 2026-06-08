@@ -40,11 +40,22 @@ void stop_subscribe()
 	}
 }
 
+void OnPluginsUnloading()
+{
+	redis_stop_async_worker();
+}
+
 void OnPluginsUnloaded()
 {
 	stop_subscribe();
+	redis_stop_async_worker();
 
 	channels.clear();
+	if (!g_redis)
+	{
+		return;
+	}
+
 	g_redis->bgsave();
 
 	delete g_redis;
