@@ -26,9 +26,9 @@
  *   to add multiple entries.
  */
 #define MODULE_NAME 	"Redis"
-#define MODULE_VERSION 	"0.0.1"
-#define MODULE_AUTHOR 	"Aoi.Kagase"
-#define MODULE_URL 		"https://github.com/AoiKagase/Amxx-Module-Redis"
+#define MODULE_VERSION 	"0.1.0-async"
+#define MODULE_AUTHOR 	"Aoi.Kagase; samurake"
+#define MODULE_URL 		"https://github.com/samurake/Amxx-Module-Redis"
 #define MODULE_LOGTAG 	"REDIS"
 #define MODULE_LIBRARY 	"redis"
 #define MODULE_LIBCLASS ""

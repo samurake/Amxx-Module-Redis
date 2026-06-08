@@ -2,6 +2,10 @@
 ### Description:
 > This is a module for amxmodx that allows operations from HLDS to the Redis data store.
 
+Current fork version: `0.1.0-async`.
+
+Original author: Aoi.Kagase. Async queue maintainer: samurake.
+
 ---
 ### Required:
 > Data store server application supporting Redis protocol.
