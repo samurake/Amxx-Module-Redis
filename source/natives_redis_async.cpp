@@ -37,8 +37,16 @@ namespace
         std::string value;
     };
 
+    struct AsyncConnectResult
+    {
+        int request_id = 0;
+        int status = -1;
+        std::string error;
+    };
+
     std::deque<AsyncCommand> g_async_queue;
     std::deque<AsyncResult> g_async_results;
+    std::deque<AsyncConnectResult> g_async_connect_results;
     std::mutex g_async_mutex;
     std::condition_variable g_async_cv;
     std::thread* g_async_worker = nullptr;
@@ -58,6 +66,17 @@ namespace
         g_async_results.push_back(result);
     }
 
+    void enqueue_async_connect_result(int request_id, int status, const std::string& error)
+    {
+        AsyncConnectResult result;
+        result.request_id = request_id;
+        result.status = status;
+        result.error = error;
+
+        std::lock_guard<std::mutex> lock(g_async_mutex);
+        g_async_connect_results.push_back(result);
+    }
+
     void enqueue_async_error_result(const AsyncCommand& command, const std::string& message)
     {
         if (command.type != AsyncCommandType::Get && command.type != AsyncCommandType::HGet)
@@ -73,6 +92,21 @@ namespace
         result.field = command.field;
         result.value = message;
         enqueue_async_result(result);
+    }
+
+    void fail_queued_async_commands(const std::string& message)
+    {
+        std::deque<AsyncCommand> failed_commands;
+
+        {
+            std::lock_guard<std::mutex> lock(g_async_mutex);
+            failed_commands.swap(g_async_queue);
+        }
+
+        for (const auto& command : failed_commands)
+        {
+            enqueue_async_error_result(command, message);
+        }
     }
 
     bool enqueue_async_command(const AsyncCommand& command)
@@ -175,11 +209,13 @@ namespace
         }
     }
 
-    void async_worker_main(ConnectionOptions options)
+    void async_worker_main(ConnectionOptions options, int connect_request_id)
     {
         try
         {
             Redis redis(options);
+            redis.ping();
+            enqueue_async_connect_result(connect_request_id, 0, "");
 
             while (true)
             {
@@ -219,25 +255,72 @@ namespace
         catch (const Error& e)
         {
             set_async_error(e.what());
+            enqueue_async_connect_result(connect_request_id, -1, e.what());
+            fail_queued_async_commands(e.what());
             g_async_running.store(false);
         }
         catch (const std::exception& e)
         {
             set_async_error(e.what());
+            enqueue_async_connect_result(connect_request_id, -1, e.what());
+            fail_queued_async_commands(e.what());
             g_async_running.store(false);
         }
+    }
+
+    bool cleanup_async_worker_if_stopped()
+    {
+        if (g_async_running.load() || !g_async_worker)
+        {
+            return false;
+        }
+
+        if (g_async_worker->joinable())
+        {
+            g_async_worker->join();
+        }
+
+        delete g_async_worker;
+        g_async_worker = nullptr;
+        return true;
     }
 }
 
 void redis_start_async_worker()
 {
+    redis_start_async_worker(g_connection_options, 0);
+}
+
+bool redis_start_async_worker(const ConnectionOptions& options, int request_id)
+{
     if (g_async_running.load())
     {
-        return;
+        set_async_error("async worker already running");
+        return false;
     }
 
+    cleanup_async_worker_if_stopped();
+
     g_async_running.store(true);
-    g_async_worker = new std::thread(async_worker_main, g_connection_options);
+    try
+    {
+        g_async_worker = new std::thread(async_worker_main, options, request_id);
+    }
+    catch (const std::exception& e)
+    {
+        set_async_error(e.what());
+        g_async_running.store(false);
+        enqueue_async_connect_result(request_id, -1, e.what());
+        return false;
+    }
+    catch (...)
+    {
+        set_async_error("unknown async worker start error");
+        g_async_running.store(false);
+        enqueue_async_connect_result(request_id, -1, "unknown async worker start error");
+        return false;
+    }
+    return true;
 }
 
 void redis_stop_async_worker()
@@ -264,10 +347,37 @@ void redis_stop_async_worker()
     std::lock_guard<std::mutex> lock(g_async_mutex);
     g_async_queue.clear();
     g_async_results.clear();
+    g_async_connect_results.clear();
 }
 
 void redis_dispatch_async_results()
 {
+    if (ForwardRedisAsyncOnConnect >= 0)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            AsyncConnectResult result;
+
+            {
+                std::lock_guard<std::mutex> lock(g_async_mutex);
+                if (g_async_connect_results.empty())
+                {
+                    break;
+                }
+
+                result = g_async_connect_results.front();
+                g_async_connect_results.pop_front();
+            }
+
+            MF_ExecuteForward(
+                ForwardRedisAsyncOnConnect,
+                result.request_id,
+                result.status,
+                result.error.c_str()
+            );
+        }
+    }
+
     if (ForwardRedisAsyncOnResult < 0)
     {
         return;
@@ -298,6 +408,40 @@ void redis_dispatch_async_results()
             result.value.c_str()
         );
     }
+}
+
+// native redis_async_connect(const hostip[], const port = 6379, const username[] = "", const password[] = "", request_id = 0);
+cell redis_async_connect(AMX* amx, cell* params)
+{
+    int len = 0;
+    ConnectionOptions options;
+    options.host = MF_GetAmxString(amx, params[1], 0, &len);
+    options.port = params[2];
+    options.connect_timeout = std::chrono::milliseconds(1000);
+    options.socket_timeout = std::chrono::milliseconds(1000);
+
+    std::string username = MF_GetAmxString(amx, params[3], 1, &len);
+    std::string password = MF_GetAmxString(amx, params[4], 2, &len);
+
+    if (!username.empty())
+    {
+        options.user = username;
+    }
+
+    if (!password.empty())
+    {
+        options.password = password;
+    }
+
+    g_connection_options = options;
+
+    if (!redis_start_async_worker(options, params[5]))
+    {
+        return -1;
+    }
+
+    redis_set_last_error("");
+    return 0;
 }
 
 // native redis_async_publish(const channel[], const message[]);

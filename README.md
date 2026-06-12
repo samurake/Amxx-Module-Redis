@@ -2,7 +2,7 @@
 ### Description:
 > This is a module for amxmodx that allows operations from HLDS to the Redis data store.
 
-Current fork version: `0.1.1-async`.
+Current fork version: `0.1.2-async-connect`.
 
 Original author: Aoi.Kagase. Async queue maintainer: samurake.
 
@@ -41,14 +41,16 @@ See ![redis.inc](redis.inc) and ![redis_test.sma](redis_test.sma)
 ---
 ### Async queue:
 The original Redis natives are kept for compatibility and still execute on the
-AMXX/game thread. Use the `redis_async_*` natives for runtime paths that must not
-wait on network I/O, such as analytics publishing or write-behind snapshots.
+AMXX/game thread. Use `redis_async_connect()` plus the `redis_async_*` command
+natives for runtime paths that must not wait on network I/O, such as analytics
+publishing or write-behind snapshots.
 
-The async API starts a worker thread after `redis_connect()` succeeds. Async
-write natives only copy Pawn parameters into a bounded queue and return:
+The async API starts a worker thread and performs the Redis connection on that
+worker thread. Async command natives only copy Pawn parameters into a bounded
+queue and return:
 
 ```pawn
-redis_connect("127.0.0.1", 6379, "", "secret");
+redis_async_connect("127.0.0.1", 6379, "", "secret", 100);
 redis_async_set_queue_limit(8192);
 
 redis_async_publish("amxx:server_analytics", payload);
@@ -58,6 +60,7 @@ redis_async_hset_string("amxx:server_analytics:events:2026-06-08", event_id, pay
 Available async write/read natives:
 
 ```pawn
+redis_async_connect(const hostip[], const port = 6379, const username[] = "", const password[] = "", request_id = 0);
 redis_async_publish(const channel[], const message[]);
 redis_async_hset_string(const key[], const field[], const value[]);
 redis_async_hset_integer(const key[], const field[], const value);
@@ -75,8 +78,9 @@ redis_async_last_error(output[], maxlength);
 ```
 
 Return value is `0` when the command is queued and `-1` when Redis is not ready
-or the queue is full. The worker owns a separate Redis connection, so it does not
-share redis-plus-plus connection state with the game thread.
+or the queue is full. Commands queued after `redis_async_connect()` wait behind
+the worker-thread connection attempt; if that connection fails, async `GET` and
+`HGET` calls receive an error result.
 
 `redis_connect()` and all Redis natives catch Redis/client exceptions and return
 `-1` on failure instead of allowing an exception to escape into HLDS. Plugins can
@@ -85,6 +89,22 @@ read the last module error with:
 ```pawn
 new error[192];
 redis_last_error(error, charsmax(error));
+```
+
+Async connect status is dispatched back on the AMXX main thread through:
+
+```pawn
+public Redis_Async_OnConnect(request_id, status, error[])
+{
+    if (status == 0)
+    {
+        server_print("Redis async connection ready");
+    }
+    else
+    {
+        server_print("Redis async connection failed: %s", error);
+    }
+}
 ```
 
 Async `GET`/`HGET` results are dispatched back on the AMXX main thread through a

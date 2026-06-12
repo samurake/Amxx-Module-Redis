@@ -1,6 +1,7 @@
 #include "module.h"
 int ForwardRedisOnMessage = -1;
 int ForwardRedisAsyncOnResult = -1;
+int ForwardRedisAsyncOnConnect = -1;
 int HasRedisOnMessage = -1;
 
 void OnAmxxAttach()
@@ -13,6 +14,7 @@ void OnPluginsLoaded()
 	isSubscriberRunning = false;
 	ForwardRedisOnMessage = MF_RegisterForward("Redis_Subscriber_OnMessage", ET_STOP, FP_STRING, FP_STRING, FP_DONE);
 	ForwardRedisAsyncOnResult = MF_RegisterForward("Redis_Async_OnResult", ET_IGNORE, FP_CELL, FP_STRING, FP_CELL, FP_STRING, FP_STRING, FP_STRING, FP_DONE);
+	ForwardRedisAsyncOnConnect = MF_RegisterForward("Redis_Async_OnConnect", ET_IGNORE, FP_CELL, FP_CELL, FP_STRING, FP_DONE);
 	HasRedisOnMessage = UTIL_CheckForPublic("Redis_Subscriber_OnMessage");
 
 	if (g_redis)

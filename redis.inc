@@ -29,6 +29,21 @@ native redis_connect(const hostip[], const port = 6379, const username[] = "", c
 native redis_last_error(output[], maxlength);
 
 /*
+ * @note    Starts the Redis async worker and connects on that worker thread.
+ *          This native only copies connection parameters and returns immediately.
+ *          Connection status is delivered through Redis_Async_OnConnect.
+ *
+ * @param   hostip[]    Redis server IP address. (IPv4)
+ * @param   port        Redis server port number. Default = 6379.
+ * @param   username[]  Username specified for the Redis server. Default = blank.
+ * @param   password[]  Password specified for the Redis server. Default = blank.
+ * @param   request_id  Caller-defined id echoed back in Redis_Async_OnConnect.
+ *
+ * @return  0 is worker start queued. -1 is error, usually worker already running.
+ */
+native redis_async_connect(const hostip[], const port = 6379, const username[] = "", const password[] = "", request_id = 0);
+
+/*
  * @note	When using the Pub/Sub command, register a subscriber channel.
  * 
  * @param	channel[]	Specified channel name.
@@ -286,6 +301,15 @@ native redis_async_last_error(output[], maxlength);
  * @param   value[]     result value on status 0, error message on status -1.
  */
 forward Redis_Async_OnResult(request_id, command[], status, key[], field[], value[]);
+
+/*
+ * @note    Called on the AMXX main thread after redis_async_connect finishes.
+ *
+ * @param   request_id  Caller-defined id from redis_async_connect.
+ * @param   status      0 = connected, -1 = connection failed.
+ * @param   error[]     Error message on failure, empty on success.
+ */
+forward Redis_Async_OnConnect(request_id, status, error[]);
 
 /*
  * @note	When a message is received via the PUB/SUB command, this function is called as a callback.

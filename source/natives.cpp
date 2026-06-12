@@ -20,6 +20,7 @@ static cell Native_RedisHSetString(AMX *amx, cell *params)  {return redis_hset_s
 static cell Native_RedisHSetInteger(AMX *amx, cell *params) {return redis_hset_integer(amx, params);}
 
 static cell Native_RedisPublish(AMX* amx, cell* params)		{return redis_publish(amx, params); }
+static cell Native_RedisAsyncConnect(AMX* amx, cell* params) {return redis_async_connect(amx, params); }
 static cell Native_RedisAsyncPublish(AMX* amx, cell* params) {return redis_async_publish(amx, params); }
 static cell Native_RedisAsyncHSetString(AMX* amx, cell* params) {return redis_async_hset_string(amx, params); }
 static cell Native_RedisAsyncHSetInteger(AMX* amx, cell* params) {return redis_async_hset_integer(amx, params); }
@@ -53,6 +54,7 @@ AMX_NATIVE_INFO g_natives[] =
 	{"redis_hdel_field", Native_RedisHDeleteField},
 
 	{"redis_publish", Native_RedisPublish},
+	{"redis_async_connect", Native_RedisAsyncConnect},
 	{"redis_async_publish", Native_RedisAsyncPublish},
 	{"redis_async_hset_string", Native_RedisAsyncHSetString},
 	{"redis_async_hset_integer", Native_RedisAsyncHSetInteger},
