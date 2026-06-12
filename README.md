@@ -88,6 +88,10 @@ connection failures are all recorded in both `redis_async_last_error()` and
 `redis_last_error()`. A `Redis_Async_OnConnect` failure callback is also queued
 when possible so plugins can keep one error-handling path.
 
+`redis_async_connect()` is safe to call from `plugin_init`. The module queues the
+connect result and dispatches it only after async forwards are registered, so
+plugins do not depend on `OnPluginsLoaded` ordering.
+
 `redis_connect()` and all Redis natives catch Redis/client exceptions and return
 `-1` on failure instead of allowing an exception to escape into HLDS. Plugins can
 read the last module error with:

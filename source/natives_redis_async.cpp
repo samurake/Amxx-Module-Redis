@@ -373,6 +373,8 @@ void redis_stop_async_worker()
 
 void redis_dispatch_async_results()
 {
+    redis_register_async_forwards();
+
     if (ForwardRedisAsyncOnConnect >= 0)
     {
         for (int i = 0; i < 8; i++)

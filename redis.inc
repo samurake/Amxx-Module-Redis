@@ -32,6 +32,8 @@ native redis_last_error(output[], maxlength);
  * @note    Starts the Redis async worker and connects on that worker thread.
  *          This native only copies connection parameters and returns immediately.
  *          Connection status is delivered through Redis_Async_OnConnect.
+ *          Safe to call from plugin_init; callbacks are dispatched after the
+ *          module has registered async forwards.
  *
  * @param   hostip[]    Redis server IP address. (IPv4)
  * @param   port        Redis server port number. Default = 6379.

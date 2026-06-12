@@ -26,6 +26,7 @@ extern int ForwardRedisOnMessage;
 extern int ForwardRedisAsyncOnResult;
 extern int ForwardRedisAsyncOnConnect;
 extern int HasRedisOnMessage;
+extern bool RedisAsyncForwardsRegistered;
 
 extern std::vector<std::string> channels;
 extern std::thread* th_subscriber;
@@ -75,6 +76,7 @@ extern cell redis_register_subscriber_forward(bool hasOnMessage);
 extern void redis_start_async_worker();
 extern bool redis_start_async_worker(const ConnectionOptions& options, int request_id);
 extern void redis_stop_async_worker();
+extern void redis_register_async_forwards();
 extern void redis_dispatch_async_results();
 
 extern bool UTIL_CheckForPublic(const char* publicname);
