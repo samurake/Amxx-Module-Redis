@@ -8,6 +8,7 @@ Redis* g_subscriber_redis = NULL;
 ConnectionOptions g_connection_options;
 sw::redis::Subscriber *sub;
 std::string g_redis_last_error;
+std::mutex g_redis_last_error_mutex;
 
 const char* convertToCString(const OptionalString& optStr) {
     if (optStr) {
@@ -19,12 +20,14 @@ const char* convertToCString(const OptionalString& optStr) {
 
 void redis_set_last_error(const char* message)
 {
+    std::lock_guard<std::mutex> lock(g_redis_last_error_mutex);
     g_redis_last_error = message ? message : "";
 }
 
 // native redis_last_error(output[], maxlength);
 cell redis_last_error(AMX *amx, cell *params)
 {
+    std::lock_guard<std::mutex> lock(g_redis_last_error_mutex);
     MF_SetAmxString(amx, params[1], g_redis_last_error.c_str(), params[2]);
     return static_cast<cell>(g_redis_last_error.length());
 }

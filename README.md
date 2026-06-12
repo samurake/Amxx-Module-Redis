@@ -82,6 +82,12 @@ or the queue is full. Commands queued after `redis_async_connect()` wait behind
 the worker-thread connection attempt; if that connection fails, async `GET` and
 `HGET` calls receive an error result.
 
+`redis_async_connect()` validates host/port before starting the worker. Invalid
+parameters, duplicate async connect attempts, worker start failures, and worker
+connection failures are all recorded in both `redis_async_last_error()` and
+`redis_last_error()`. A `Redis_Async_OnConnect` failure callback is also queued
+when possible so plugins can keep one error-handling path.
+
 `redis_connect()` and all Redis natives catch Redis/client exceptions and return
 `-1` on failure instead of allowing an exception to escape into HLDS. Plugins can
 read the last module error with:

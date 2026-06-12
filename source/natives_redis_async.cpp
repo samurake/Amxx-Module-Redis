@@ -60,6 +60,12 @@ namespace
         g_async_last_error = message;
     }
 
+    void record_async_error(const std::string& message)
+    {
+        set_async_error(message);
+        redis_set_last_error(message.c_str());
+    }
+
     void enqueue_async_result(const AsyncResult& result)
     {
         std::lock_guard<std::mutex> lock(g_async_mutex);
@@ -113,6 +119,7 @@ namespace
     {
         if (!g_async_running.load())
         {
+            record_async_error("async worker is not running; call redis_async_connect first");
             return false;
         }
 
@@ -121,6 +128,7 @@ namespace
             if (g_async_queue.size() >= g_async_queue_limit)
             {
                 g_async_last_error = "async queue full";
+                redis_set_last_error("async queue full");
                 return false;
             }
 
@@ -242,28 +250,40 @@ namespace
                 }
                 catch (const Error& e)
                 {
-                    set_async_error(e.what());
+                    record_async_error(e.what());
                     enqueue_async_error_result(command, e.what());
                 }
                 catch (const std::exception& e)
                 {
-                    set_async_error(e.what());
+                    record_async_error(e.what());
                     enqueue_async_error_result(command, e.what());
+                }
+                catch (...)
+                {
+                    record_async_error("unknown Redis async command error");
+                    enqueue_async_error_result(command, "unknown Redis async command error");
                 }
             }
         }
         catch (const Error& e)
         {
-            set_async_error(e.what());
+            record_async_error(e.what());
             enqueue_async_connect_result(connect_request_id, -1, e.what());
             fail_queued_async_commands(e.what());
             g_async_running.store(false);
         }
         catch (const std::exception& e)
         {
-            set_async_error(e.what());
+            record_async_error(e.what());
             enqueue_async_connect_result(connect_request_id, -1, e.what());
             fail_queued_async_commands(e.what());
+            g_async_running.store(false);
+        }
+        catch (...)
+        {
+            record_async_error("unknown Redis async connection error");
+            enqueue_async_connect_result(connect_request_id, -1, "unknown Redis async connection error");
+            fail_queued_async_commands("unknown Redis async connection error");
             g_async_running.store(false);
         }
     }
@@ -295,7 +315,8 @@ bool redis_start_async_worker(const ConnectionOptions& options, int request_id)
 {
     if (g_async_running.load())
     {
-        set_async_error("async worker already running");
+        record_async_error("async worker already running");
+        enqueue_async_connect_result(request_id, -1, "async worker already running");
         return false;
     }
 
@@ -308,14 +329,14 @@ bool redis_start_async_worker(const ConnectionOptions& options, int request_id)
     }
     catch (const std::exception& e)
     {
-        set_async_error(e.what());
+        record_async_error(e.what());
         g_async_running.store(false);
         enqueue_async_connect_result(request_id, -1, e.what());
         return false;
     }
     catch (...)
     {
-        set_async_error("unknown async worker start error");
+        record_async_error("unknown async worker start error");
         g_async_running.store(false);
         enqueue_async_connect_result(request_id, -1, "unknown async worker start error");
         return false;
@@ -419,6 +440,20 @@ cell redis_async_connect(AMX* amx, cell* params)
     options.port = params[2];
     options.connect_timeout = std::chrono::milliseconds(1000);
     options.socket_timeout = std::chrono::milliseconds(1000);
+
+    if (options.host.empty())
+    {
+        record_async_error("Redis host is empty");
+        enqueue_async_connect_result(params[5], -1, "Redis host is empty");
+        return -1;
+    }
+
+    if (options.port <= 0 || options.port > 65535)
+    {
+        record_async_error("Redis port is invalid");
+        enqueue_async_connect_result(params[5], -1, "Redis port is invalid");
+        return -1;
+    }
 
     std::string username = MF_GetAmxString(amx, params[3], 1, &len);
     std::string password = MF_GetAmxString(amx, params[4], 2, &len);
