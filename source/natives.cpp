@@ -37,6 +37,7 @@ static cell Native_RedisAsyncSetQueueLimit(AMX* amx, cell* params) {return redis
 static cell Native_RedisAsyncLastError(AMX* amx, cell* params) {return redis_async_last_error(amx, params); }
 
 static cell Native_RedisRegisterSubscriber(AMX* amx, cell* params)	{return redis_register_subscriber(amx, params); }
+static cell Native_RedisStartSubscribe(AMX* amx, cell* params) {return redis_start_subscribe(amx, params); }
 
 AMX_NATIVE_INFO g_natives[] =
 {
@@ -71,6 +72,7 @@ AMX_NATIVE_INFO g_natives[] =
 	{"redis_async_last_error", Native_RedisAsyncLastError},
 
 	{"redis_register_subscriber", Native_RedisRegisterSubscriber },
+	{"redis_start_subscribe", Native_RedisStartSubscribe },
 
 	{nullptr, nullptr}
 };

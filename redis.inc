@@ -51,11 +51,22 @@ native redis_async_connect(const hostip[], const port = 6379, const username[] =
  * @param	channel[]	Specified channel name.
  * 
  * @note	Execute within the `plugin_init` function. 
- *			Also, execute after the `redis_connect` function.
+ *			Also, execute after the `redis_connect` function. Safe before
+ *          OnPluginsLoaded; subscription startup is deferred until forwards
+ *          are available.
  * 
  * @return	0 is success. -1 is error.
  */
 native redis_register_subscriber(const channel[]);
+
+/*
+ * @note    Starts Redis subscriber consumption for registered channels. Safe to
+ *          call from plugin_init; if forwards are not registered yet, startup
+ *          is deferred until OnPluginsLoaded.
+ *
+ * @return  0 is started or deferred. -1 is error.
+ */
+native redis_start_subscribe();
 
 /*
  * @note	Use the `SET` command to write values to the Redis server. (for string)

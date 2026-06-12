@@ -7,13 +7,33 @@ std::thread *th_subscriber = NULL;
 bool isSubscriberRunning = false;
 ConnectionOptions g_subscriber_options;
 
+namespace
+{
+	bool channel_registered(const std::string& channel)
+	{
+		for (const auto& registered : channels)
+		{
+			if (registered == channel)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+}
+
 cell redis_register_subscriber_forward(bool hasOnMessage)
 {
 	if (hasOnMessage)
 	{
+		if (sub != nullptr)
+		{
+			return 0;
+		}
+
 		try
 		{
-			channels.clear();
 			g_subscriber_options = g_connection_options;
 			g_subscriber_options.socket_timeout = std::chrono::milliseconds(300);
 			g_subscriber_redis = new Redis(g_subscriber_options);
@@ -54,18 +74,27 @@ cell redis_register_subscriber_forward(bool hasOnMessage)
 // native redis_subscribe(const channel[]);
 cell redis_register_subscriber(AMX *amx, cell *params)
 {
-	//if (!HasRedisOnMessage)
-	//	return -1;
-
 	int len = 0;
 	std::string channel = MF_GetAmxString(amx, params[1], 0, &len);
 
+	if (channel.empty())
+	{
+		redis_set_last_error("Redis subscriber channel is empty");
+		return -1;
+	}
+
 	if (g_redis != NULL)
 	{
-		channels.push_back(channel);
+		if (!channel_registered(channel))
+		{
+			channels.push_back(channel);
+		}
 	}
 	else
+	{
+		redis_set_last_error("Redis is not connected; call redis_connect before redis_register_subscriber");
 		return -1;
+	}
 
 	return 0;
 }
@@ -88,18 +117,50 @@ void consumeThread()
 		}
 		catch (const Error& err)
 		{
-			LOG_CONSOLE(PLID, "[DEBUG] SUBSCRIBE ERROR: %s", err.what());
+			redis_set_last_error(err.what());
+			MF_Log("[Redis] subscribe consume failed: %s", err.what());
+			isSubscriberRunning = false;
+			return;
+		}
+		catch (const std::exception& err)
+		{
+			redis_set_last_error(err.what());
+			MF_Log("[Redis] subscribe consume failed: %s", err.what());
+			isSubscriberRunning = false;
+			return;
+		}
+		catch (...)
+		{
+			redis_set_last_error("unknown Redis subscribe consume error");
+			MF_Log("[Redis] subscribe consume failed: unknown Redis subscribe consume error");
+			isSubscriberRunning = false;
 			return;
 		}
 	}
 }
 
-// native redis_start_subscribe();
-cell redis_start_subscribe(bool hasOnMessage)
+cell redis_start_subscribe(AMX* amx, cell* params)
 {
+	if (HasRedisOnMessage < 0)
+	{
+		return 0;
+	}
+
+	return redis_start_subscribe_now(HasRedisOnMessage);
+}
+
+// native redis_start_subscribe();
+cell redis_start_subscribe_now(bool hasOnMessage)
+{
+	if (isSubscriberRunning)
+	{
+		return 0;
+	}
+
 	if (!hasOnMessage)
 	{
-		MF_Log("[WARN] NOT EXISTS FORWARD. EXIT.");
+		redis_set_last_error("Redis_Subscriber_OnMessage forward does not exist");
+		MF_Log("[Redis] Redis_Subscriber_OnMessage forward does not exist.");
 		return -1;
 	}
 
@@ -107,7 +168,16 @@ cell redis_start_subscribe(bool hasOnMessage)
 	{
 		if (sub == nullptr)
 		{
-			MF_Log("[WARN] REDIS SUBSCRIBER NOT CONNECTED.");
+			if (redis_register_subscriber_forward(hasOnMessage) != 0)
+			{
+				return -1;
+			}
+		}
+
+		if (sub == nullptr)
+		{
+			redis_set_last_error("Redis subscriber is not connected");
+			MF_Log("[Redis] subscriber is not connected.");
 			return -1;
 		}
 
@@ -129,12 +199,35 @@ cell redis_start_subscribe(bool hasOnMessage)
 			MF_Log("[Redis] subscribe failed: %s", e.what());
 			return -1;
 		}
+		catch (...)
+		{
+			redis_set_last_error("unknown Redis subscribe error");
+			MF_Log("[Redis] subscribe failed: unknown Redis subscribe error");
+			return -1;
+		}
 
-		th_subscriber = new std::thread(consumeThread);
+		try
+		{
+			th_subscriber = new std::thread(consumeThread);
+		}
+		catch (const std::exception& e)
+		{
+			redis_set_last_error(e.what());
+			MF_Log("[Redis] subscriber thread start failed: %s", e.what());
+			return -1;
+		}
+		catch (...)
+		{
+			redis_set_last_error("unknown Redis subscriber thread start error");
+			MF_Log("[Redis] subscriber thread start failed: unknown Redis subscriber thread start error");
+			return -1;
+		}
 	}
 	else 
 	{
-		MF_Log("[WARN] NO REGISTED CHANNELS.");
+		redis_set_last_error("no Redis subscriber channels registered");
+		MF_Log("[Redis] no subscriber channels registered.");
+		return -1;
 	}
 
 	return 0;

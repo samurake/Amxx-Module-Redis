@@ -3,6 +3,7 @@ int ForwardRedisOnMessage = -1;
 int ForwardRedisAsyncOnResult = -1;
 int ForwardRedisAsyncOnConnect = -1;
 int HasRedisOnMessage = -1;
+bool RedisSubscriberForwardRegistered = false;
 bool RedisAsyncForwardsRegistered = false;
 
 void redis_register_async_forwards()
@@ -25,14 +26,18 @@ void OnAmxxAttach()
 void OnPluginsLoaded()
 {
 	isSubscriberRunning = false;
-	ForwardRedisOnMessage = MF_RegisterForward("Redis_Subscriber_OnMessage", ET_STOP, FP_STRING, FP_STRING, FP_DONE);
+	if (!RedisSubscriberForwardRegistered)
+	{
+		ForwardRedisOnMessage = MF_RegisterForward("Redis_Subscriber_OnMessage", ET_STOP, FP_STRING, FP_STRING, FP_DONE);
+		RedisSubscriberForwardRegistered = true;
+	}
 	redis_register_async_forwards();
 	HasRedisOnMessage = UTIL_CheckForPublic("Redis_Subscriber_OnMessage");
 
 	if (g_redis)
 	{
 		redis_register_subscriber_forward(HasRedisOnMessage);
-		redis_start_subscribe(HasRedisOnMessage);
+		redis_start_subscribe_now(HasRedisOnMessage);
 	}
 }
 

@@ -2,7 +2,7 @@
 ### Description:
 > This is a module for amxmodx that allows operations from HLDS to the Redis data store.
 
-Current fork version: `0.1.2-async-connect`.
+Current fork version: `0.1.3-async-connect`.
 
 Original author: Aoi.Kagase. Async queue maintainer: samurake.
 
@@ -91,6 +91,17 @@ when possible so plugins can keep one error-handling path.
 `redis_async_connect()` is safe to call from `plugin_init`. The module queues the
 connect result and dispatches it only after async forwards are registered, so
 plugins do not depend on `OnPluginsLoaded` ordering.
+
+The sync Pub/Sub setup is also safe from `plugin_init`:
+
+```pawn
+redis_connect("127.0.0.1", 6379);
+redis_register_subscriber("my_channel");
+redis_start_subscribe();
+```
+
+Subscriber channels are preserved until `OnPluginsLoaded`; the module registers
+`Redis_Subscriber_OnMessage` then starts the subscriber thread.
 
 `redis_connect()` and all Redis natives catch Redis/client exceptions and return
 `-1` on failure instead of allowing an exception to escape into HLDS. Plugins can

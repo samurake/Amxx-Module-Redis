@@ -51,3 +51,15 @@ public Redis_Async_OnResult(request_id, command[], status, key[], field[], value
 
     server_print("[REDIS] async %s key=%s field=%s status=%d value=%s", command, key, field, status, value);
 }
+
+public Redis_Subscriber_OnMessage(channel[], message[])
+{
+    server_print("[REDIS] subscriber channel=%s message=%s", channel, message);
+}
+
+public CompileCheckSyncSubscriberApi()
+{
+    redis_connect(HOST_IP, HOST_PORT);
+    redis_register_subscriber("REDIS_TEST_CHANNEL");
+    redis_start_subscribe();
+}
