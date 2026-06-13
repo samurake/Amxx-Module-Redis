@@ -2,7 +2,7 @@
 ### Description:
 > This is a module for amxmodx that allows operations from HLDS to the Redis data store.
 
-Current fork version: `0.1.3-async-connect`.
+Current fork version: `0.2.0-multi-async`.
 
 Original author: Aoi.Kagase. Async queue maintainer: samurake.
 
@@ -61,6 +61,9 @@ Available async write/read natives:
 
 ```pawn
 redis_async_connect(const hostip[], const port = 6379, const username[] = "", const password[] = "", request_id = 0);
+redis_async_open(const hostip[], const port = 6379, const username[] = "", const password[] = "", request_id = 0, const name[] = "");
+redis_async_close(connection_id);
+redis_async_status(connection_id);
 redis_async_publish(const channel[], const message[]);
 redis_async_hset_string(const key[], const field[], const value[]);
 redis_async_hset_integer(const key[], const field[], const value);
@@ -73,8 +76,21 @@ redis_async_get_integer(const key[], request_id = 0);
 redis_async_hget_string(const key[], const field[], request_id = 0);
 redis_async_hget_integer(const key[], const field[], request_id = 0);
 redis_async_queue_size();
+redis_async_queue_size_on(connection_id);
 redis_async_set_queue_limit(limit);
 redis_async_last_error(output[], maxlength);
+redis_async_last_error_on(connection_id, output[], maxlength);
+```
+
+The legacy `redis_async_connect()` API uses default connection handle `1`.
+Existing plugins can keep using the original `redis_async_*` natives unchanged.
+New plugins that need independent endpoints or isolated queues should use
+`redis_async_open()` and the handle-specific `*_on(connection_id, ...)` natives:
+
+```pawn
+new conn = redis_async_open("127.0.0.1", 6379, "", "secret", 200, "analytics");
+redis_async_publish_on(conn, "amxx:analytics", payload);
+redis_async_hset_string_on(conn, "amxx:analytics:events", event_id, payload);
 ```
 
 Return value is `0` when the command is queued and `-1` when Redis is not ready
@@ -126,6 +142,58 @@ public Redis_Async_OnConnect(request_id, status, error[])
         server_print("Redis async connection failed: %s", error);
     }
 }
+```
+
+Handle-aware connection and read callbacks are also available:
+
+```pawn
+public Redis_Async_OnConnection(connection_id, request_id, status, error[])
+{
+    if (status == 0) {
+        server_print("Redis async handle %d is connected", connection_id);
+    } else {
+        server_print("Redis async handle %d failed: %s", connection_id, error);
+    }
+}
+
+public Redis_Async_OnResultEx(connection_id, request_id, command[], status, key[], field[], value[])
+{
+    server_print("Redis async handle %d %s status=%d value=%s", connection_id, command, status, value);
+}
+```
+
+Async workers reconnect automatically with bounded backoff. Commands submitted
+while a handle is connecting or reconnecting are stored in that handle's bounded
+queue and flushed after reconnect. Queue-full, invalid-handle, and connection
+errors are available through `redis_async_last_error()` or
+`redis_async_last_error_on()`.
+
+### Async stress test
+
+`redis_async_stress_test.sma` opens the default legacy connection plus two
+independent handles. It writes isolated test data to:
+
+```text
+amxx:test:async:health
+amxx:test:async:events:handle1
+amxx:test:async:events:handle2
+```
+
+and publishes to:
+
+```text
+amxx:test:async:handle1
+amxx:test:async:handle2
+```
+
+Configure it through these cvars before loading the plugin:
+
+```text
+redis_async_test_host
+redis_async_test_port
+redis_async_test_username
+redis_async_test_password
+redis_async_test_interval
 ```
 
 Async `GET`/`HGET` results are dispatched back on the AMXX main thread through a

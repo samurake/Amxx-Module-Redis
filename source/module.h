@@ -4,9 +4,12 @@
 #include "amxxsdk/amxxmodule.h"
 #include "sw/redis++/redis++.h"
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -25,6 +28,8 @@ extern bool isSubscriberRunning;
 extern int ForwardRedisOnMessage;
 extern int ForwardRedisAsyncOnResult;
 extern int ForwardRedisAsyncOnConnect;
+extern int ForwardRedisAsyncOnResultEx;
+extern int ForwardRedisAsyncOnConnection;
 extern int HasRedisOnMessage;
 extern bool RedisSubscriberForwardRegistered;
 extern bool RedisAsyncForwardsRegistered;
@@ -55,6 +60,9 @@ extern cell redis_hset_integer(AMX *amx, cell *params);
 
 extern cell redis_publish(AMX* amx, cell* params);
 extern cell redis_async_connect(AMX* amx, cell* params);
+extern cell redis_async_open(AMX* amx, cell* params);
+extern cell redis_async_close(AMX* amx, cell* params);
+extern cell redis_async_status(AMX* amx, cell* params);
 extern cell redis_async_publish(AMX* amx, cell* params);
 extern cell redis_async_hset_string(AMX* amx, cell* params);
 extern cell redis_async_hset_integer(AMX* amx, cell* params);
@@ -65,10 +73,23 @@ extern cell redis_async_hdel_field(AMX* amx, cell* params);
 extern cell redis_async_queue_size(AMX* amx, cell* params);
 extern cell redis_async_set_queue_limit(AMX* amx, cell* params);
 extern cell redis_async_last_error(AMX* amx, cell* params);
+extern cell redis_async_last_error_on(AMX* amx, cell* params);
 extern cell redis_async_get_string(AMX* amx, cell* params);
 extern cell redis_async_get_integer(AMX* amx, cell* params);
 extern cell redis_async_hget_string(AMX* amx, cell* params);
 extern cell redis_async_hget_integer(AMX* amx, cell* params);
+extern cell redis_async_publish_on(AMX* amx, cell* params);
+extern cell redis_async_hset_string_on(AMX* amx, cell* params);
+extern cell redis_async_hset_integer_on(AMX* amx, cell* params);
+extern cell redis_async_set_string_on(AMX* amx, cell* params);
+extern cell redis_async_set_integer_on(AMX* amx, cell* params);
+extern cell redis_async_del_key_on(AMX* amx, cell* params);
+extern cell redis_async_hdel_field_on(AMX* amx, cell* params);
+extern cell redis_async_get_string_on(AMX* amx, cell* params);
+extern cell redis_async_get_integer_on(AMX* amx, cell* params);
+extern cell redis_async_hget_string_on(AMX* amx, cell* params);
+extern cell redis_async_hget_integer_on(AMX* amx, cell* params);
+extern cell redis_async_queue_size_on(AMX* amx, cell* params);
 
 extern cell redis_register_subscriber(AMX* amx, cell* params);
 extern cell redis_start_subscribe(AMX* amx, cell* params);

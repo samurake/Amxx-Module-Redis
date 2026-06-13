@@ -2,6 +2,8 @@
 int ForwardRedisOnMessage = -1;
 int ForwardRedisAsyncOnResult = -1;
 int ForwardRedisAsyncOnConnect = -1;
+int ForwardRedisAsyncOnResultEx = -1;
+int ForwardRedisAsyncOnConnection = -1;
 int HasRedisOnMessage = -1;
 bool RedisSubscriberForwardRegistered = false;
 bool RedisAsyncForwardsRegistered = false;
@@ -15,6 +17,8 @@ void redis_register_async_forwards()
 
 	ForwardRedisAsyncOnResult = MF_RegisterForward("Redis_Async_OnResult", ET_IGNORE, FP_CELL, FP_STRING, FP_CELL, FP_STRING, FP_STRING, FP_STRING, FP_DONE);
 	ForwardRedisAsyncOnConnect = MF_RegisterForward("Redis_Async_OnConnect", ET_IGNORE, FP_CELL, FP_CELL, FP_STRING, FP_DONE);
+	ForwardRedisAsyncOnResultEx = MF_RegisterForward("Redis_Async_OnResultEx", ET_IGNORE, FP_CELL, FP_CELL, FP_STRING, FP_CELL, FP_STRING, FP_STRING, FP_STRING, FP_DONE);
+	ForwardRedisAsyncOnConnection = MF_RegisterForward("Redis_Async_OnConnection", ET_IGNORE, FP_CELL, FP_CELL, FP_CELL, FP_STRING, FP_DONE);
 	RedisAsyncForwardsRegistered = true;
 }
 

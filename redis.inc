@@ -3,6 +3,12 @@
 #endif
 #define _redis_included
 
+#define REDIS_ASYNC_STATUS_STOPPED -1
+#define REDIS_ASYNC_STATUS_CONNECTED 0
+#define REDIS_ASYNC_STATUS_CONNECTING 1
+#define REDIS_ASYNC_STATUS_RECONNECTING 2
+#define REDIS_ASYNC_STATUS_CLOSING 3
+
 
 /*
  * @note	Creates a Redis connection with the specified parameters.
@@ -41,9 +47,29 @@ native redis_last_error(output[], maxlength);
  * @param   password[]  Password specified for the Redis server. Default = blank.
  * @param   request_id  Caller-defined id echoed back in Redis_Async_OnConnect.
  *
- * @return  0 is worker start queued. -1 is error, usually worker already running.
+ * @return  0 is worker start queued on the default async handle. -1 is error.
  */
 native redis_async_connect(const hostip[], const port = 6379, const username[] = "", const password[] = "", request_id = 0);
+
+/*
+ * @note    Opens an independent Redis async connection and worker thread.
+ *          Connection status is delivered through Redis_Async_OnConnection.
+ *
+ * @return  Positive connection id on success. -1 is validation/worker error.
+ */
+native redis_async_open(const hostip[], const port = 6379, const username[] = "", const password[] = "", request_id = 0, const name[] = "");
+
+/*
+ * @note    Closes an async connection handle.
+ *
+ * @return  0 is success. -1 is invalid handle.
+ */
+native redis_async_close(connection_id);
+
+/*
+ * @note    Returns REDIS_ASYNC_STATUS_* for an async connection handle.
+ */
+native redis_async_status(connection_id);
 
 /*
  * @note	When using the Pub/Sub command, register a subscriber channel.
@@ -285,9 +311,30 @@ native redis_async_hget_string(const key[], const field[], request_id = 0);
 native redis_async_hget_integer(const key[], const field[], request_id = 0);
 
 /*
+ * @note    Handle-specific async command variants. Use these with ids returned
+ *          by redis_async_open().
+ */
+native redis_async_publish_on(connection_id, const channel[], const message[]);
+native redis_async_hset_string_on(connection_id, const key[], const field[], const value[]);
+native redis_async_hset_integer_on(connection_id, const key[], const field[], const value);
+native redis_async_set_string_on(connection_id, const key[], const value[], const ttl = 0, const type = 0, const keepttl = 0);
+native redis_async_set_integer_on(connection_id, const key[], const value, const ttl = 0, const type = 0, const keepttl = 0);
+native redis_async_del_key_on(connection_id, const key[]);
+native redis_async_hdel_field_on(connection_id, const key[], const field[]);
+native redis_async_get_string_on(connection_id, const key[], request_id = 0);
+native redis_async_get_integer_on(connection_id, const key[], request_id = 0);
+native redis_async_hget_string_on(connection_id, const key[], const field[], request_id = 0);
+native redis_async_hget_integer_on(connection_id, const key[], const field[], request_id = 0);
+
+/*
  * @note    Returns the current number of queued async commands.
  */
 native redis_async_queue_size();
+
+/*
+ * @note    Returns the queued async command count for one connection handle.
+ */
+native redis_async_queue_size_on(connection_id);
 
 /*
  * @note    Sets the maximum async queue depth. Default is 4096.
@@ -304,6 +351,13 @@ native redis_async_set_queue_limit(limit);
 native redis_async_last_error(output[], maxlength);
 
 /*
+ * @note    Copies the last async error for one connection handle into output.
+ *
+ * @return  0 if an error exists. -1 if no error has been recorded.
+ */
+native redis_async_last_error_on(connection_id, output[], maxlength);
+
+/*
  * @note    Called on the AMXX main thread when an async GET/HGET result is ready.
  *
  * @param   request_id  caller-defined id from redis_async_get_* / redis_async_hget_*.
@@ -316,6 +370,12 @@ native redis_async_last_error(output[], maxlength);
 forward Redis_Async_OnResult(request_id, command[], status, key[], field[], value[]);
 
 /*
+ * @note    Called on the AMXX main thread when a handle-specific async GET/HGET
+ *          result is ready.
+ */
+forward Redis_Async_OnResultEx(connection_id, request_id, command[], status, key[], field[], value[]);
+
+/*
  * @note    Called on the AMXX main thread after redis_async_connect finishes.
  *
  * @param   request_id  Caller-defined id from redis_async_connect.
@@ -323,6 +383,17 @@ forward Redis_Async_OnResult(request_id, command[], status, key[], field[], valu
  * @param   error[]     Error message on failure, empty on success.
  */
 forward Redis_Async_OnConnect(request_id, status, error[]);
+
+/*
+ * @note    Called on the AMXX main thread after redis_async_open or the default
+ *          redis_async_connect handle changes connection state.
+ *
+ * @param   connection_id  Async connection id. Default legacy handle is 1.
+ * @param   request_id     Caller-defined id from the connect/open native.
+ * @param   status         0 = connected, -1 = failed, -2 = closed.
+ * @param   error[]        Error message on failure/close, empty on success.
+ */
+forward Redis_Async_OnConnection(connection_id, request_id, status, error[]);
 
 /*
  * @note	When a message is received via the PUB/SUB command, this function is called as a callback.

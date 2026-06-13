@@ -4,6 +4,14 @@ using namespace sw::redis;
 
 namespace
 {
+    const int DEFAULT_CONNECTION_ID = 1;
+    const int STATUS_STOPPED = -1;
+    const int STATUS_CONNECTING = 1;
+    const int STATUS_CONNECTED = 0;
+    const int STATUS_RECONNECTING = 2;
+    const int STATUS_CLOSING = 3;
+    const int CONNECT_STATUS_CLOSED = -2;
+
     enum class AsyncCommandType
     {
         Publish,
@@ -29,6 +37,7 @@ namespace
 
     struct AsyncResult
     {
+        int connection_id = DEFAULT_CONNECTION_ID;
         int request_id = 0;
         std::string command;
         int status = -1;
@@ -39,51 +48,87 @@ namespace
 
     struct AsyncConnectResult
     {
+        int connection_id = DEFAULT_CONNECTION_ID;
         int request_id = 0;
         int status = -1;
         std::string error;
     };
 
-    std::deque<AsyncCommand> g_async_queue;
+    struct AsyncConnection
+    {
+        int id = DEFAULT_CONNECTION_ID;
+        std::string name;
+        ConnectionOptions options;
+        std::deque<AsyncCommand> queue;
+        std::deque<int> pending_connect_requests;
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::thread* worker = nullptr;
+        bool closing = false;
+        int state = STATUS_STOPPED;
+        size_t queue_limit = 4096;
+        std::string last_error;
+    };
+
+    std::map<int, std::shared_ptr<AsyncConnection>> g_connections;
+    std::mutex g_connections_mutex;
     std::deque<AsyncResult> g_async_results;
     std::deque<AsyncConnectResult> g_async_connect_results;
-    std::mutex g_async_mutex;
-    std::condition_variable g_async_cv;
-    std::thread* g_async_worker = nullptr;
-    std::atomic<bool> g_async_running(false);
+    std::mutex g_async_results_mutex;
     size_t g_async_queue_limit = 4096;
     std::string g_async_last_error;
+    int g_next_connection_id = DEFAULT_CONNECTION_ID + 1;
 
-    void set_async_error(const std::string& message)
+    int get_param_count(cell* params)
     {
-        std::lock_guard<std::mutex> lock(g_async_mutex);
-        g_async_last_error = message;
+        return static_cast<int>(params[0] / sizeof(cell));
     }
 
-    void record_async_error(const std::string& message)
+    bool same_options(const ConnectionOptions& left, const ConnectionOptions& right)
     {
-        set_async_error(message);
+        return left.host == right.host
+            && left.port == right.port
+            && left.user == right.user
+            && left.password == right.password;
+    }
+
+    void set_global_async_error(const std::string& message)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_async_results_mutex);
+            g_async_last_error = message;
+        }
         redis_set_last_error(message.c_str());
+    }
+
+    void set_connection_error(const std::shared_ptr<AsyncConnection>& connection, const std::string& message)
+    {
+        {
+            std::lock_guard<std::mutex> lock(connection->mutex);
+            connection->last_error = message;
+        }
+        set_global_async_error(message);
     }
 
     void enqueue_async_result(const AsyncResult& result)
     {
-        std::lock_guard<std::mutex> lock(g_async_mutex);
+        std::lock_guard<std::mutex> lock(g_async_results_mutex);
         g_async_results.push_back(result);
     }
 
-    void enqueue_async_connect_result(int request_id, int status, const std::string& error)
+    void enqueue_async_connect_result(int connection_id, int request_id, int status, const std::string& error)
     {
         AsyncConnectResult result;
+        result.connection_id = connection_id;
         result.request_id = request_id;
         result.status = status;
         result.error = error;
 
-        std::lock_guard<std::mutex> lock(g_async_mutex);
+        std::lock_guard<std::mutex> lock(g_async_results_mutex);
         g_async_connect_results.push_back(result);
     }
 
-    void enqueue_async_error_result(const AsyncCommand& command, const std::string& message)
+    void enqueue_async_error_result(int connection_id, const AsyncCommand& command, const std::string& message)
     {
         if (command.type != AsyncCommandType::Get && command.type != AsyncCommandType::HGet)
         {
@@ -91,6 +136,7 @@ namespace
         }
 
         AsyncResult result;
+        result.connection_id = connection_id;
         result.request_id = command.request_id;
         result.command = command.type == AsyncCommandType::Get ? "get" : "hget";
         result.status = -1;
@@ -100,46 +146,70 @@ namespace
         enqueue_async_result(result);
     }
 
-    void fail_queued_async_commands(const std::string& message)
+    void drain_pending_connect_results(const std::shared_ptr<AsyncConnection>& connection, int status, const std::string& error)
     {
-        std::deque<AsyncCommand> failed_commands;
+        std::deque<int> requests;
 
         {
-            std::lock_guard<std::mutex> lock(g_async_mutex);
-            failed_commands.swap(g_async_queue);
+            std::lock_guard<std::mutex> lock(connection->mutex);
+            requests.swap(connection->pending_connect_requests);
         }
 
-        for (const auto& command : failed_commands)
+        for (int request_id : requests)
         {
-            enqueue_async_error_result(command, message);
+            enqueue_async_connect_result(connection->id, request_id, status, error);
         }
     }
 
-    bool enqueue_async_command(const AsyncCommand& command)
+    void set_connection_state(const std::shared_ptr<AsyncConnection>& connection, int state)
     {
-        if (!g_async_running.load())
+        std::lock_guard<std::mutex> lock(connection->mutex);
+        connection->state = state;
+    }
+
+    ConnectionOptions read_options(AMX* amx, cell* params, int host_param, int port_param, int username_param, int password_param)
+    {
+        int len = 0;
+        ConnectionOptions options;
+        options.host = MF_GetAmxString(amx, params[host_param], 0, &len);
+        options.port = params[port_param];
+        options.connect_timeout = std::chrono::milliseconds(1000);
+        options.socket_timeout = std::chrono::milliseconds(1000);
+
+        std::string username = MF_GetAmxString(amx, params[username_param], 1, &len);
+        std::string password = MF_GetAmxString(amx, params[password_param], 2, &len);
+
+        if (!username.empty())
         {
-            record_async_error("async worker is not running; call redis_async_connect first");
+            options.user = username;
+        }
+
+        if (!password.empty())
+        {
+            options.password = password;
+        }
+
+        return options;
+    }
+
+    bool validate_options(const ConnectionOptions& options, std::string& error)
+    {
+        if (options.host.empty())
+        {
+            error = "Redis host is empty";
             return false;
         }
 
+        if (options.port <= 0 || options.port > 65535)
         {
-            std::lock_guard<std::mutex> lock(g_async_mutex);
-            if (g_async_queue.size() >= g_async_queue_limit)
-            {
-                g_async_last_error = "async queue full";
-                redis_set_last_error("async queue full");
-                return false;
-            }
-
-            g_async_queue.push_back(command);
+            error = "Redis port is invalid";
+            return false;
         }
 
-        g_async_cv.notify_one();
         return true;
     }
 
-    void execute_async_command(Redis& redis, const AsyncCommand& command)
+    void execute_async_command(Redis& redis, int connection_id, const AsyncCommand& command)
     {
         switch (command.type)
         {
@@ -173,6 +243,7 @@ namespace
             case AsyncCommandType::Get:
             {
                 AsyncResult result;
+                result.connection_id = connection_id;
                 result.request_id = command.request_id;
                 result.command = "get";
                 result.key = command.key;
@@ -195,6 +266,7 @@ namespace
             case AsyncCommandType::HGet:
             {
                 AsyncResult result;
+                result.connection_id = connection_id;
                 result.request_id = command.request_id;
                 result.command = "hget";
                 result.key = command.key;
@@ -217,92 +289,433 @@ namespace
         }
     }
 
-    void async_worker_main(ConnectionOptions options, int connect_request_id)
+    bool wait_before_reconnect(const std::shared_ptr<AsyncConnection>& connection, int backoff_ms)
     {
-        try
-        {
-            Redis redis(options);
-            redis.ping();
-            enqueue_async_connect_result(connect_request_id, 0, "");
-
-            while (true)
-            {
-                AsyncCommand command;
-
-                {
-                    std::unique_lock<std::mutex> lock(g_async_mutex);
-                    g_async_cv.wait(lock, [] {
-                        return !g_async_running.load() || !g_async_queue.empty();
-                    });
-
-                    if (!g_async_running.load() && g_async_queue.empty())
-                    {
-                        break;
-                    }
-
-                    command = g_async_queue.front();
-                    g_async_queue.pop_front();
-                }
-
-                try
-                {
-                    execute_async_command(redis, command);
-                }
-                catch (const Error& e)
-                {
-                    record_async_error(e.what());
-                    enqueue_async_error_result(command, e.what());
-                }
-                catch (const std::exception& e)
-                {
-                    record_async_error(e.what());
-                    enqueue_async_error_result(command, e.what());
-                }
-                catch (...)
-                {
-                    record_async_error("unknown Redis async command error");
-                    enqueue_async_error_result(command, "unknown Redis async command error");
-                }
-            }
-        }
-        catch (const Error& e)
-        {
-            record_async_error(e.what());
-            enqueue_async_connect_result(connect_request_id, -1, e.what());
-            fail_queued_async_commands(e.what());
-            g_async_running.store(false);
-        }
-        catch (const std::exception& e)
-        {
-            record_async_error(e.what());
-            enqueue_async_connect_result(connect_request_id, -1, e.what());
-            fail_queued_async_commands(e.what());
-            g_async_running.store(false);
-        }
-        catch (...)
-        {
-            record_async_error("unknown Redis async connection error");
-            enqueue_async_connect_result(connect_request_id, -1, "unknown Redis async connection error");
-            fail_queued_async_commands("unknown Redis async connection error");
-            g_async_running.store(false);
-        }
-    }
-
-    bool cleanup_async_worker_if_stopped()
-    {
-        if (g_async_running.load() || !g_async_worker)
+        std::unique_lock<std::mutex> lock(connection->mutex);
+        if (connection->closing)
         {
             return false;
         }
 
-        if (g_async_worker->joinable())
+        connection->cv.wait_for(lock, std::chrono::milliseconds(backoff_ms), [&connection] {
+            return connection->closing;
+        });
+
+        return !connection->closing;
+    }
+
+    void async_connection_worker(std::shared_ptr<AsyncConnection> connection)
+    {
+        int backoff_ms = 1000;
+        bool reconnect_notice_pending = false;
+
+        while (true)
         {
-            g_async_worker->join();
+            {
+                std::lock_guard<std::mutex> lock(connection->mutex);
+                if (connection->closing)
+                {
+                    connection->state = STATUS_CLOSING;
+                    break;
+                }
+                if (connection->state != STATUS_RECONNECTING)
+                {
+                    connection->state = STATUS_CONNECTING;
+                }
+            }
+
+            try
+            {
+                Redis redis(connection->options);
+                redis.ping();
+
+                {
+                    std::lock_guard<std::mutex> lock(connection->mutex);
+                    connection->state = STATUS_CONNECTED;
+                    connection->last_error.clear();
+                }
+                backoff_ms = 1000;
+                drain_pending_connect_results(connection, 0, "");
+                if (reconnect_notice_pending)
+                {
+                    enqueue_async_connect_result(connection->id, 0, 0, "");
+                    reconnect_notice_pending = false;
+                }
+
+                while (true)
+                {
+                    AsyncCommand command;
+
+                    {
+                        std::unique_lock<std::mutex> lock(connection->mutex);
+                        connection->cv.wait(lock, [&connection] {
+                            return connection->closing || !connection->queue.empty();
+                        });
+
+                        if (connection->closing)
+                        {
+                            connection->state = STATUS_CLOSING;
+                            return;
+                        }
+
+                        command = connection->queue.front();
+                        connection->queue.pop_front();
+                    }
+
+                    try
+                    {
+                        execute_async_command(redis, connection->id, command);
+                    }
+                    catch (const Error& e)
+                    {
+                        set_connection_error(connection, e.what());
+                        enqueue_async_error_result(connection->id, command, e.what());
+                        enqueue_async_connect_result(connection->id, 0, -1, e.what());
+                        reconnect_notice_pending = true;
+                        set_connection_state(connection, STATUS_RECONNECTING);
+                        break;
+                    }
+                    catch (const std::exception& e)
+                    {
+                        set_connection_error(connection, e.what());
+                        enqueue_async_error_result(connection->id, command, e.what());
+                        enqueue_async_connect_result(connection->id, 0, -1, e.what());
+                        reconnect_notice_pending = true;
+                        set_connection_state(connection, STATUS_RECONNECTING);
+                        break;
+                    }
+                    catch (...)
+                    {
+                        set_connection_error(connection, "unknown Redis async command error");
+                        enqueue_async_error_result(connection->id, command, "unknown Redis async command error");
+                        enqueue_async_connect_result(connection->id, 0, -1, "unknown Redis async command error");
+                        reconnect_notice_pending = true;
+                        set_connection_state(connection, STATUS_RECONNECTING);
+                        break;
+                    }
+                }
+            }
+            catch (const Error& e)
+            {
+                set_connection_error(connection, e.what());
+                drain_pending_connect_results(connection, -1, e.what());
+                if (reconnect_notice_pending)
+                {
+                    enqueue_async_connect_result(connection->id, 0, -1, e.what());
+                }
+                reconnect_notice_pending = true;
+            }
+            catch (const std::exception& e)
+            {
+                set_connection_error(connection, e.what());
+                drain_pending_connect_results(connection, -1, e.what());
+                if (reconnect_notice_pending)
+                {
+                    enqueue_async_connect_result(connection->id, 0, -1, e.what());
+                }
+                reconnect_notice_pending = true;
+            }
+            catch (...)
+            {
+                set_connection_error(connection, "unknown Redis async connection error");
+                drain_pending_connect_results(connection, -1, "unknown Redis async connection error");
+                if (reconnect_notice_pending)
+                {
+                    enqueue_async_connect_result(connection->id, 0, -1, "unknown Redis async connection error");
+                }
+                reconnect_notice_pending = true;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(connection->mutex);
+                if (connection->closing)
+                {
+                    connection->state = STATUS_CLOSING;
+                    break;
+                }
+                connection->state = STATUS_RECONNECTING;
+            }
+
+            if (!wait_before_reconnect(connection, backoff_ms))
+            {
+                break;
+            }
+
+            if (backoff_ms < 30000)
+            {
+                backoff_ms *= 2;
+                if (backoff_ms > 30000)
+                {
+                    backoff_ms = 30000;
+                }
+            }
         }
 
-        delete g_async_worker;
-        g_async_worker = nullptr;
+        drain_pending_connect_results(connection, CONNECT_STATUS_CLOSED, "async connection closed");
+        set_connection_state(connection, STATUS_STOPPED);
+    }
+
+    std::shared_ptr<AsyncConnection> find_connection(int connection_id)
+    {
+        std::lock_guard<std::mutex> lock(g_connections_mutex);
+        auto iter = g_connections.find(connection_id);
+        if (iter == g_connections.end())
+        {
+            return nullptr;
+        }
+
+        return iter->second;
+    }
+
+    void start_worker(const std::shared_ptr<AsyncConnection>& connection)
+    {
+        connection->worker = new std::thread(async_connection_worker, connection);
+    }
+
+    int create_connection(const ConnectionOptions& options, int request_id, const std::string& name, bool use_default)
+    {
+        std::shared_ptr<AsyncConnection> connection(new AsyncConnection());
+        connection->id = use_default ? DEFAULT_CONNECTION_ID : g_next_connection_id++;
+        connection->name = name;
+        connection->options = options;
+        connection->queue_limit = g_async_queue_limit;
+        connection->state = STATUS_CONNECTING;
+        connection->pending_connect_requests.push_back(request_id);
+
+        g_connections[connection->id] = connection;
+
+        try
+        {
+            start_worker(connection);
+        }
+        catch (const std::exception& e)
+        {
+            g_connections.erase(connection->id);
+            set_global_async_error(e.what());
+            enqueue_async_connect_result(connection->id, request_id, -1, e.what());
+            return -1;
+        }
+        catch (...)
+        {
+            g_connections.erase(connection->id);
+            set_global_async_error("unknown async worker start error");
+            enqueue_async_connect_result(connection->id, request_id, -1, "unknown async worker start error");
+            return -1;
+        }
+
+        return connection->id;
+    }
+
+    int open_async_connection(const ConnectionOptions& options, int request_id, const std::string& name, bool use_default, bool legacy_return)
+    {
+        std::string error;
+        if (!validate_options(options, error))
+        {
+            set_global_async_error(error);
+            enqueue_async_connect_result(use_default ? DEFAULT_CONNECTION_ID : 0, request_id, -1, error);
+            return -1;
+        }
+
+        std::lock_guard<std::mutex> lock(g_connections_mutex);
+
+        if (use_default)
+        {
+            auto existing = g_connections.find(DEFAULT_CONNECTION_ID);
+            if (existing != g_connections.end())
+            {
+                auto connection = existing->second;
+                bool connected = false;
+
+                {
+                    std::lock_guard<std::mutex> connection_lock(connection->mutex);
+                    if (!same_options(connection->options, options))
+                    {
+                        error = "default async connection already uses a different Redis endpoint; use redis_async_open for another endpoint";
+                        connection->last_error = error;
+                        set_global_async_error(error);
+                        enqueue_async_connect_result(DEFAULT_CONNECTION_ID, request_id, -1, error);
+                        return -1;
+                    }
+
+                    connected = connection->state == STATUS_CONNECTED;
+                    if (!connected)
+                    {
+                        connection->pending_connect_requests.push_back(request_id);
+                    }
+                }
+
+                if (connected)
+                {
+                    enqueue_async_connect_result(DEFAULT_CONNECTION_ID, request_id, 0, "");
+                }
+
+                return legacy_return ? 0 : DEFAULT_CONNECTION_ID;
+            }
+        }
+
+        int connection_id = create_connection(options, request_id, name, use_default);
+        if (connection_id < 0)
+        {
+            return -1;
+        }
+
+        if (use_default)
+        {
+            g_connection_options = options;
+        }
+        redis_set_last_error("");
+        return legacy_return ? 0 : connection_id;
+    }
+
+    bool enqueue_async_command_on(int connection_id, const AsyncCommand& command)
+    {
+        auto connection = find_connection(connection_id);
+        if (!connection)
+        {
+            set_global_async_error("async connection handle is invalid");
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(connection->mutex);
+            if (connection->closing || connection->state == STATUS_STOPPED)
+            {
+                connection->last_error = "async connection is closed";
+                set_global_async_error("async connection is closed");
+                return false;
+            }
+
+            if (connection->queue.size() >= connection->queue_limit)
+            {
+                connection->last_error = "async queue full";
+                set_global_async_error("async queue full");
+                return false;
+            }
+
+            connection->queue.push_back(command);
+        }
+
+        connection->cv.notify_one();
         return true;
+    }
+
+    void stop_connection(const std::shared_ptr<AsyncConnection>& connection)
+    {
+        {
+            std::lock_guard<std::mutex> lock(connection->mutex);
+            connection->closing = true;
+            connection->state = STATUS_CLOSING;
+        }
+        connection->cv.notify_all();
+
+        if (connection->worker)
+        {
+            if (connection->worker->joinable())
+            {
+                connection->worker->join();
+            }
+
+            delete connection->worker;
+            connection->worker = nullptr;
+        }
+    }
+
+    AsyncCommand make_publish_command(AMX* amx, cell* params, int channel_param, int message_param)
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::Publish;
+        command.key = MF_GetAmxString(amx, params[channel_param], 0, &len);
+        command.value = MF_GetAmxString(amx, params[message_param], 1, &len);
+        return command;
+    }
+
+    AsyncCommand make_hset_string_command(AMX* amx, cell* params, int key_param, int field_param, int value_param)
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::HSet;
+        command.key = MF_GetAmxString(amx, params[key_param], 0, &len);
+        command.field = MF_GetAmxString(amx, params[field_param], 1, &len);
+        command.value = MF_GetAmxString(amx, params[value_param], 2, &len);
+        return command;
+    }
+
+    AsyncCommand make_hset_integer_command(AMX* amx, cell* params, int key_param, int field_param, int value_param)
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::HSet;
+        command.key = MF_GetAmxString(amx, params[key_param], 0, &len);
+        command.field = MF_GetAmxString(amx, params[field_param], 1, &len);
+        command.value = std::to_string(params[value_param]);
+        return command;
+    }
+
+    AsyncCommand make_set_string_command(AMX* amx, cell* params, int key_param, int value_param, int ttl_param, int type_param, int keepttl_param)
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::Set;
+        command.key = MF_GetAmxString(amx, params[key_param], 0, &len);
+        command.value = MF_GetAmxString(amx, params[value_param], 1, &len);
+        command.ttl = params[ttl_param];
+        command.update_type = static_cast<UpdateType>(params[type_param]);
+        command.keepttl = params[keepttl_param] != 0;
+        return command;
+    }
+
+    AsyncCommand make_set_integer_command(AMX* amx, cell* params, int key_param, int value_param, int ttl_param, int type_param, int keepttl_param)
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::Set;
+        command.key = MF_GetAmxString(amx, params[key_param], 0, &len);
+        command.value = std::to_string(params[value_param]);
+        command.ttl = params[ttl_param];
+        command.update_type = static_cast<UpdateType>(params[type_param]);
+        command.keepttl = params[keepttl_param] != 0;
+        return command;
+    }
+
+    AsyncCommand make_del_command(AMX* amx, cell* params, int key_param)
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::Del;
+        command.key = MF_GetAmxString(amx, params[key_param], 0, &len);
+        return command;
+    }
+
+    AsyncCommand make_hdel_command(AMX* amx, cell* params, int key_param, int field_param)
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::HDel;
+        command.key = MF_GetAmxString(amx, params[key_param], 0, &len);
+        command.field = MF_GetAmxString(amx, params[field_param], 1, &len);
+        return command;
+    }
+
+    AsyncCommand make_get_command(AMX* amx, cell* params, int key_param, int request_param)
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::Get;
+        command.key = MF_GetAmxString(amx, params[key_param], 0, &len);
+        command.request_id = params[request_param];
+        return command;
+    }
+
+    AsyncCommand make_hget_command(AMX* amx, cell* params, int key_param, int field_param, int request_param)
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::HGet;
+        command.key = MF_GetAmxString(amx, params[key_param], 0, &len);
+        command.field = MF_GetAmxString(amx, params[field_param], 1, &len);
+        command.request_id = params[request_param];
+        return command;
     }
 }
 
@@ -313,60 +726,24 @@ void redis_start_async_worker()
 
 bool redis_start_async_worker(const ConnectionOptions& options, int request_id)
 {
-    if (g_async_running.load())
-    {
-        record_async_error("async worker already running");
-        enqueue_async_connect_result(request_id, -1, "async worker already running");
-        return false;
-    }
-
-    cleanup_async_worker_if_stopped();
-
-    g_async_running.store(true);
-    try
-    {
-        g_async_worker = new std::thread(async_worker_main, options, request_id);
-    }
-    catch (const std::exception& e)
-    {
-        record_async_error(e.what());
-        g_async_running.store(false);
-        enqueue_async_connect_result(request_id, -1, e.what());
-        return false;
-    }
-    catch (...)
-    {
-        record_async_error("unknown async worker start error");
-        g_async_running.store(false);
-        enqueue_async_connect_result(request_id, -1, "unknown async worker start error");
-        return false;
-    }
-    return true;
+    return open_async_connection(options, request_id, "", true, true) == 0;
 }
 
 void redis_stop_async_worker()
 {
-    if (!g_async_running.load() && !g_async_worker)
+    std::map<int, std::shared_ptr<AsyncConnection>> connections;
+
     {
-        return;
+        std::lock_guard<std::mutex> lock(g_connections_mutex);
+        connections.swap(g_connections);
     }
 
-    g_async_running.store(false);
-    g_async_cv.notify_all();
-
-    if (g_async_worker)
+    for (auto& item : connections)
     {
-        if (g_async_worker->joinable())
-        {
-            g_async_worker->join();
-        }
-
-        delete g_async_worker;
-        g_async_worker = nullptr;
+        stop_connection(item.second);
     }
 
-    std::lock_guard<std::mutex> lock(g_async_mutex);
-    g_async_queue.clear();
+    std::lock_guard<std::mutex> lock(g_async_results_mutex);
     g_async_results.clear();
     g_async_connect_results.clear();
 }
@@ -375,23 +752,34 @@ void redis_dispatch_async_results()
 {
     redis_register_async_forwards();
 
-    if (ForwardRedisAsyncOnConnect >= 0)
+    for (int i = 0; i < 32; i++)
     {
-        for (int i = 0; i < 8; i++)
+        AsyncConnectResult result;
+
         {
-            AsyncConnectResult result;
-
+            std::lock_guard<std::mutex> lock(g_async_results_mutex);
+            if (g_async_connect_results.empty())
             {
-                std::lock_guard<std::mutex> lock(g_async_mutex);
-                if (g_async_connect_results.empty())
-                {
-                    break;
-                }
-
-                result = g_async_connect_results.front();
-                g_async_connect_results.pop_front();
+                break;
             }
 
+            result = g_async_connect_results.front();
+            g_async_connect_results.pop_front();
+        }
+
+        if (ForwardRedisAsyncOnConnection >= 0)
+        {
+            MF_ExecuteForward(
+                ForwardRedisAsyncOnConnection,
+                result.connection_id,
+                result.request_id,
+                result.status,
+                result.error.c_str()
+            );
+        }
+
+        if (result.connection_id == DEFAULT_CONNECTION_ID && ForwardRedisAsyncOnConnect >= 0)
+        {
             MF_ExecuteForward(
                 ForwardRedisAsyncOnConnect,
                 result.request_id,
@@ -401,17 +789,12 @@ void redis_dispatch_async_results()
         }
     }
 
-    if (ForwardRedisAsyncOnResult < 0)
-    {
-        return;
-    }
-
-    for (int i = 0; i < 64; i++)
+    for (int i = 0; i < 128; i++)
     {
         AsyncResult result;
 
         {
-            std::lock_guard<std::mutex> lock(g_async_mutex);
+            std::lock_guard<std::mutex> lock(g_async_results_mutex);
             if (g_async_results.empty())
             {
                 return;
@@ -421,202 +804,149 @@ void redis_dispatch_async_results()
             g_async_results.pop_front();
         }
 
-        MF_ExecuteForward(
-            ForwardRedisAsyncOnResult,
-            result.request_id,
-            result.command.c_str(),
-            result.status,
-            result.key.c_str(),
-            result.field.c_str(),
-            result.value.c_str()
-        );
+        if (ForwardRedisAsyncOnResultEx >= 0)
+        {
+            MF_ExecuteForward(
+                ForwardRedisAsyncOnResultEx,
+                result.connection_id,
+                result.request_id,
+                result.command.c_str(),
+                result.status,
+                result.key.c_str(),
+                result.field.c_str(),
+                result.value.c_str()
+            );
+        }
+
+        if (result.connection_id == DEFAULT_CONNECTION_ID && ForwardRedisAsyncOnResult >= 0)
+        {
+            MF_ExecuteForward(
+                ForwardRedisAsyncOnResult,
+                result.request_id,
+                result.command.c_str(),
+                result.status,
+                result.key.c_str(),
+                result.field.c_str(),
+                result.value.c_str()
+            );
+        }
     }
 }
 
-// native redis_async_connect(const hostip[], const port = 6379, const username[] = "", const password[] = "", request_id = 0);
 cell redis_async_connect(AMX* amx, cell* params)
 {
+    ConnectionOptions options = read_options(amx, params, 1, 2, 3, 4);
+    return open_async_connection(options, params[5], "", true, true);
+}
+
+cell redis_async_open(AMX* amx, cell* params)
+{
+    ConnectionOptions options = read_options(amx, params, 1, 2, 3, 4);
+
     int len = 0;
-    ConnectionOptions options;
-    options.host = MF_GetAmxString(amx, params[1], 0, &len);
-    options.port = params[2];
-    options.connect_timeout = std::chrono::milliseconds(1000);
-    options.socket_timeout = std::chrono::milliseconds(1000);
-
-    if (options.host.empty())
+    std::string name;
+    if (get_param_count(params) >= 6)
     {
-        record_async_error("Redis host is empty");
-        enqueue_async_connect_result(params[5], -1, "Redis host is empty");
-        return -1;
+        name = MF_GetAmxString(amx, params[6], 3, &len);
     }
 
-    if (options.port <= 0 || options.port > 65535)
+    return open_async_connection(options, params[5], name, false, false);
+}
+
+cell redis_async_close(AMX* amx, cell* params)
+{
+    int connection_id = params[1];
+    std::shared_ptr<AsyncConnection> connection;
+
     {
-        record_async_error("Redis port is invalid");
-        enqueue_async_connect_result(params[5], -1, "Redis port is invalid");
-        return -1;
+        std::lock_guard<std::mutex> lock(g_connections_mutex);
+        auto iter = g_connections.find(connection_id);
+        if (iter == g_connections.end())
+        {
+            set_global_async_error("async connection handle is invalid");
+            return -1;
+        }
+
+        connection = iter->second;
+        g_connections.erase(iter);
     }
 
-    std::string username = MF_GetAmxString(amx, params[3], 1, &len);
-    std::string password = MF_GetAmxString(amx, params[4], 2, &len);
-
-    if (!username.empty())
-    {
-        options.user = username;
-    }
-
-    if (!password.empty())
-    {
-        options.password = password;
-    }
-
-    g_connection_options = options;
-
-    if (!redis_start_async_worker(options, params[5]))
-    {
-        return -1;
-    }
-
-    redis_set_last_error("");
+    stop_connection(connection);
     return 0;
 }
 
-// native redis_async_publish(const channel[], const message[]);
+cell redis_async_status(AMX* amx, cell* params)
+{
+    auto connection = find_connection(params[1]);
+    if (!connection)
+    {
+        return STATUS_STOPPED;
+    }
+
+    std::lock_guard<std::mutex> lock(connection->mutex);
+    return connection->state;
+}
+
 cell redis_async_publish(AMX* amx, cell* params)
 {
-    int len = 0;
-    AsyncCommand command;
-    command.type = AsyncCommandType::Publish;
-    command.key = MF_GetAmxString(amx, params[1], 0, &len);
-    command.value = MF_GetAmxString(amx, params[2], 1, &len);
-
-    return enqueue_async_command(command) ? 0 : -1;
+    return redis_async_publish_on(amx, params);
 }
 
-// native redis_async_hset_string(const key[], const field[], const value[]);
 cell redis_async_hset_string(AMX* amx, cell* params)
 {
-    int len = 0;
-    AsyncCommand command;
-    command.type = AsyncCommandType::HSet;
-    command.key = MF_GetAmxString(amx, params[1], 0, &len);
-    command.field = MF_GetAmxString(amx, params[2], 1, &len);
-    command.value = MF_GetAmxString(amx, params[3], 2, &len);
-
-    return enqueue_async_command(command) ? 0 : -1;
+    return enqueue_async_command_on(DEFAULT_CONNECTION_ID, make_hset_string_command(amx, params, 1, 2, 3)) ? 0 : -1;
 }
 
-// native redis_async_hset_integer(const key[], const field[], const value);
 cell redis_async_hset_integer(AMX* amx, cell* params)
 {
-    int len = 0;
-    AsyncCommand command;
-    command.type = AsyncCommandType::HSet;
-    command.key = MF_GetAmxString(amx, params[1], 0, &len);
-    command.field = MF_GetAmxString(amx, params[2], 1, &len);
-    command.value = std::to_string(params[3]);
-
-    return enqueue_async_command(command) ? 0 : -1;
+    return enqueue_async_command_on(DEFAULT_CONNECTION_ID, make_hset_integer_command(amx, params, 1, 2, 3)) ? 0 : -1;
 }
 
-// native redis_async_set_string(const key[], const value[], const ttl = 0, const type = 0, const keepttl = 0);
 cell redis_async_set_string(AMX* amx, cell* params)
 {
-    int len = 0;
-    AsyncCommand command;
-    command.type = AsyncCommandType::Set;
-    command.key = MF_GetAmxString(amx, params[1], 0, &len);
-    command.value = MF_GetAmxString(amx, params[2], 1, &len);
-    command.ttl = params[3];
-    command.update_type = static_cast<UpdateType>(params[4]);
-    command.keepttl = params[5] != 0;
-
-    return enqueue_async_command(command) ? 0 : -1;
+    return enqueue_async_command_on(DEFAULT_CONNECTION_ID, make_set_string_command(amx, params, 1, 2, 3, 4, 5)) ? 0 : -1;
 }
 
-// native redis_async_set_integer(const key[], const value, const ttl = 0, const type = 0, const keepttl = 0);
 cell redis_async_set_integer(AMX* amx, cell* params)
 {
-    int len = 0;
-    AsyncCommand command;
-    command.type = AsyncCommandType::Set;
-    command.key = MF_GetAmxString(amx, params[1], 0, &len);
-    command.value = std::to_string(params[2]);
-    command.ttl = params[3];
-    command.update_type = static_cast<UpdateType>(params[4]);
-    command.keepttl = params[5] != 0;
-
-    return enqueue_async_command(command) ? 0 : -1;
+    return enqueue_async_command_on(DEFAULT_CONNECTION_ID, make_set_integer_command(amx, params, 1, 2, 3, 4, 5)) ? 0 : -1;
 }
 
-// native redis_async_del_key(const key[]);
 cell redis_async_del_key(AMX* amx, cell* params)
 {
-    int len = 0;
-    AsyncCommand command;
-    command.type = AsyncCommandType::Del;
-    command.key = MF_GetAmxString(amx, params[1], 0, &len);
-
-    return enqueue_async_command(command) ? 0 : -1;
+    return enqueue_async_command_on(DEFAULT_CONNECTION_ID, make_del_command(amx, params, 1)) ? 0 : -1;
 }
 
-// native redis_async_hdel_field(const key[], const field[]);
 cell redis_async_hdel_field(AMX* amx, cell* params)
 {
-    int len = 0;
-    AsyncCommand command;
-    command.type = AsyncCommandType::HDel;
-    command.key = MF_GetAmxString(amx, params[1], 0, &len);
-    command.field = MF_GetAmxString(amx, params[2], 1, &len);
-
-    return enqueue_async_command(command) ? 0 : -1;
+    return enqueue_async_command_on(DEFAULT_CONNECTION_ID, make_hdel_command(amx, params, 1, 2)) ? 0 : -1;
 }
 
-// native redis_async_get_string(const key[], request_id = 0);
 cell redis_async_get_string(AMX* amx, cell* params)
 {
-    int len = 0;
-    AsyncCommand command;
-    command.type = AsyncCommandType::Get;
-    command.key = MF_GetAmxString(amx, params[1], 0, &len);
-    command.request_id = params[2];
-
-    return enqueue_async_command(command) ? 0 : -1;
+    return enqueue_async_command_on(DEFAULT_CONNECTION_ID, make_get_command(amx, params, 1, 2)) ? 0 : -1;
 }
 
-// native redis_async_get_integer(const key[], request_id = 0);
 cell redis_async_get_integer(AMX* amx, cell* params)
 {
     return redis_async_get_string(amx, params);
 }
 
-// native redis_async_hget_string(const key[], const field[], request_id = 0);
 cell redis_async_hget_string(AMX* amx, cell* params)
 {
-    int len = 0;
-    AsyncCommand command;
-    command.type = AsyncCommandType::HGet;
-    command.key = MF_GetAmxString(amx, params[1], 0, &len);
-    command.field = MF_GetAmxString(amx, params[2], 1, &len);
-    command.request_id = params[3];
-
-    return enqueue_async_command(command) ? 0 : -1;
+    return enqueue_async_command_on(DEFAULT_CONNECTION_ID, make_hget_command(amx, params, 1, 2, 3)) ? 0 : -1;
 }
 
-// native redis_async_hget_integer(const key[], const field[], request_id = 0);
 cell redis_async_hget_integer(AMX* amx, cell* params)
 {
     return redis_async_hget_string(amx, params);
 }
 
-// native redis_async_queue_size();
 cell redis_async_queue_size(AMX* amx, cell* params)
 {
-    std::lock_guard<std::mutex> lock(g_async_mutex);
-    return static_cast<cell>(g_async_queue.size());
+    return redis_async_queue_size_on(amx, params);
 }
 
-// native redis_async_set_queue_limit(limit);
 cell redis_async_set_queue_limit(AMX* amx, cell* params)
 {
     if (params[1] < 1)
@@ -624,21 +954,117 @@ cell redis_async_set_queue_limit(AMX* amx, cell* params)
         return -1;
     }
 
-    std::lock_guard<std::mutex> lock(g_async_mutex);
+    std::lock_guard<std::mutex> lock(g_connections_mutex);
     g_async_queue_limit = static_cast<size_t>(params[1]);
+    for (auto& item : g_connections)
+    {
+        std::lock_guard<std::mutex> connection_lock(item.second->mutex);
+        item.second->queue_limit = g_async_queue_limit;
+    }
     return 0;
 }
 
-// native redis_async_last_error(output[], maxlength);
 cell redis_async_last_error(AMX* amx, cell* params)
 {
     std::string error;
 
     {
-        std::lock_guard<std::mutex> lock(g_async_mutex);
+        std::lock_guard<std::mutex> lock(g_async_results_mutex);
         error = g_async_last_error;
     }
 
     MF_SetAmxString(amx, params[1], error.c_str(), params[2]);
     return error.empty() ? -1 : 0;
+}
+
+cell redis_async_last_error_on(AMX* amx, cell* params)
+{
+    auto connection = find_connection(params[1]);
+    if (!connection)
+    {
+        const char* error = "async connection handle is invalid";
+        MF_SetAmxString(amx, params[2], error, params[3]);
+        set_global_async_error(error);
+        return 0;
+    }
+
+    std::string error;
+    {
+        std::lock_guard<std::mutex> lock(connection->mutex);
+        error = connection->last_error;
+    }
+
+    MF_SetAmxString(amx, params[2], error.c_str(), params[3]);
+    return error.empty() ? -1 : 0;
+}
+
+cell redis_async_publish_on(AMX* amx, cell* params)
+{
+    int connection_id = get_param_count(params) >= 3 ? params[1] : DEFAULT_CONNECTION_ID;
+    int channel_param = get_param_count(params) >= 3 ? 2 : 1;
+    int message_param = get_param_count(params) >= 3 ? 3 : 2;
+    return enqueue_async_command_on(connection_id, make_publish_command(amx, params, channel_param, message_param)) ? 0 : -1;
+}
+
+cell redis_async_hset_string_on(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(params[1], make_hset_string_command(amx, params, 2, 3, 4)) ? 0 : -1;
+}
+
+cell redis_async_hset_integer_on(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(params[1], make_hset_integer_command(amx, params, 2, 3, 4)) ? 0 : -1;
+}
+
+cell redis_async_set_string_on(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(params[1], make_set_string_command(amx, params, 2, 3, 4, 5, 6)) ? 0 : -1;
+}
+
+cell redis_async_set_integer_on(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(params[1], make_set_integer_command(amx, params, 2, 3, 4, 5, 6)) ? 0 : -1;
+}
+
+cell redis_async_del_key_on(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(params[1], make_del_command(amx, params, 2)) ? 0 : -1;
+}
+
+cell redis_async_hdel_field_on(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(params[1], make_hdel_command(amx, params, 2, 3)) ? 0 : -1;
+}
+
+cell redis_async_get_string_on(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(params[1], make_get_command(amx, params, 2, 3)) ? 0 : -1;
+}
+
+cell redis_async_get_integer_on(AMX* amx, cell* params)
+{
+    return redis_async_get_string_on(amx, params);
+}
+
+cell redis_async_hget_string_on(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(params[1], make_hget_command(amx, params, 2, 3, 4)) ? 0 : -1;
+}
+
+cell redis_async_hget_integer_on(AMX* amx, cell* params)
+{
+    return redis_async_hget_string_on(amx, params);
+}
+
+cell redis_async_queue_size_on(AMX* amx, cell* params)
+{
+    int connection_id = get_param_count(params) >= 1 ? params[1] : DEFAULT_CONNECTION_ID;
+    auto connection = find_connection(connection_id);
+    if (!connection)
+    {
+        return -1;
+    }
+
+    std::lock_guard<std::mutex> lock(connection->mutex);
+    return static_cast<cell>(connection->queue.size());
 }
