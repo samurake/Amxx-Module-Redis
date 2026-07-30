@@ -26,11 +26,11 @@
  *   to add multiple entries.
  */
 #define MODULE_NAME 	"Redis"
-#define MODULE_VERSION 	"0.2.0-multi-async"
+#define MODULE_VERSION 	"0.3.0-streams"
 #define MODULE_AUTHOR 	"Aoi.Kagase; samurake"
 #define MODULE_URL 		"https://github.com/samurake/Amxx-Module-Redis"
 #define MODULE_LOGTAG 	"REDIS"
-#define MODULE_LIBRARY 	"redis"
+#define MODULE_LIBRARY 	"redis,redis_streams"
 #define MODULE_LIBCLASS ""
 // If you want the module not to be reloaded on mapchange, remove / comment out the next line
 #define MODULE_RELOAD_ON_MAPCHANGE

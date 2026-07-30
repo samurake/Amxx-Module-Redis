@@ -25,6 +25,7 @@ static cell Native_RedisAsyncOpen(AMX* amx, cell* params) {return redis_async_op
 static cell Native_RedisAsyncClose(AMX* amx, cell* params) {return redis_async_close(amx, params); }
 static cell Native_RedisAsyncStatus(AMX* amx, cell* params) {return redis_async_status(amx, params); }
 static cell Native_RedisAsyncPublish(AMX* amx, cell* params) {return redis_async_publish(amx, params); }
+static cell Native_RedisAsyncXAdd(AMX* amx, cell* params) {return redis_async_xadd(amx, params); }
 static cell Native_RedisAsyncHSetString(AMX* amx, cell* params) {return redis_async_hset_string(amx, params); }
 static cell Native_RedisAsyncHSetInteger(AMX* amx, cell* params) {return redis_async_hset_integer(amx, params); }
 static cell Native_RedisAsyncSetString(AMX* amx, cell* params) {return redis_async_set_string(amx, params); }
@@ -40,6 +41,7 @@ static cell Native_RedisAsyncSetQueueLimit(AMX* amx, cell* params) {return redis
 static cell Native_RedisAsyncLastError(AMX* amx, cell* params) {return redis_async_last_error(amx, params); }
 static cell Native_RedisAsyncLastErrorOn(AMX* amx, cell* params) {return redis_async_last_error_on(amx, params); }
 static cell Native_RedisAsyncPublishOn(AMX* amx, cell* params) {return redis_async_publish_on(amx, params); }
+static cell Native_RedisAsyncXAddOn(AMX* amx, cell* params) {return redis_async_xadd_on(amx, params); }
 static cell Native_RedisAsyncHSetStringOn(AMX* amx, cell* params) {return redis_async_hset_string_on(amx, params); }
 static cell Native_RedisAsyncHSetIntegerOn(AMX* amx, cell* params) {return redis_async_hset_integer_on(amx, params); }
 static cell Native_RedisAsyncSetStringOn(AMX* amx, cell* params) {return redis_async_set_string_on(amx, params); }
@@ -76,6 +78,7 @@ AMX_NATIVE_INFO g_natives[] =
 	{"redis_async_close", Native_RedisAsyncClose},
 	{"redis_async_status", Native_RedisAsyncStatus},
 	{"redis_async_publish", Native_RedisAsyncPublish},
+	{"redis_async_xadd", Native_RedisAsyncXAdd},
 	{"redis_async_hset_string", Native_RedisAsyncHSetString},
 	{"redis_async_hset_integer", Native_RedisAsyncHSetInteger},
 	{"redis_async_set_string", Native_RedisAsyncSetString},
@@ -91,6 +94,7 @@ AMX_NATIVE_INFO g_natives[] =
 	{"redis_async_last_error", Native_RedisAsyncLastError},
 	{"redis_async_last_error_on", Native_RedisAsyncLastErrorOn},
 	{"redis_async_publish_on", Native_RedisAsyncPublishOn},
+	{"redis_async_xadd_on", Native_RedisAsyncXAddOn},
 	{"redis_async_hset_string_on", Native_RedisAsyncHSetStringOn},
 	{"redis_async_hset_integer_on", Native_RedisAsyncHSetIntegerOn},
 	{"redis_async_set_string_on", Native_RedisAsyncSetStringOn},

@@ -13,6 +13,8 @@
 #define REQ_HANDLE2_GET 7202
 #define REQ_HANDLE1_HGET 7301
 #define REQ_HANDLE2_HGET 7302
+#define REQ_HANDLE1_XADD 7401
+#define REQ_HANDLE2_XADD 7402
 
 new redis_async_test_host
 new redis_async_test_port
@@ -132,7 +134,9 @@ public Redis_Async_OnResult(request_id, command[], status, key[], field[], value
 
 public Redis_Async_OnResultEx(connection_id, request_id, command[], status, key[], field[], value[])
 {
-    if(request_id == REQ_HANDLE1_GET || request_id == REQ_HANDLE2_GET || request_id == REQ_HANDLE1_HGET || request_id == REQ_HANDLE2_HGET)
+    if(request_id == REQ_HANDLE1_GET || request_id == REQ_HANDLE2_GET
+        || request_id == REQ_HANDLE1_HGET || request_id == REQ_HANDLE2_HGET
+        || request_id == REQ_HANDLE1_XADD || request_id == REQ_HANDLE2_XADD)
     {
         server_print("[Redis Async Stress][%s] result connection_id=%d request=%d command=%s status=%d key=%s field=%s value=%s",
             status == 0 ? "PASS" : "FAIL",
@@ -166,6 +170,9 @@ public StressTick()
 
     if(g_handle1 > 0)
     {
+        new eventId[64]
+        formatex(eventId, charsmax(eventId), "handle1:%d", g_tick)
+        redis_async_xadd_on(g_handle1, "amxx:test:async:stream:handle1", eventId, payload, REQ_HANDLE1_XADD)
         redis_async_publish_on(g_handle1, "amxx:test:async:handle1", payload)
         redis_async_hset_string_on(g_handle1, "amxx:test:async:events:handle1", "last", payload)
         redis_async_hset_integer_on(g_handle1, "amxx:test:async:events:handle1", "last_timestamp", timestamp)
@@ -175,6 +182,9 @@ public StressTick()
 
     if(g_handle2 > 0)
     {
+        new eventId[64]
+        formatex(eventId, charsmax(eventId), "handle2:%d", g_tick)
+        redis_async_xadd_on(g_handle2, "amxx:test:async:stream:handle2", eventId, payload, REQ_HANDLE2_XADD)
         redis_async_publish_on(g_handle2, "amxx:test:async:handle2", payload)
         redis_async_hset_string_on(g_handle2, "amxx:test:async:events:handle2", "last", payload)
         redis_async_hset_integer_on(g_handle2, "amxx:test:async:events:handle2", "last_timestamp", timestamp)

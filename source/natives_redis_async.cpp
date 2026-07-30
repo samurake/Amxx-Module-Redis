@@ -15,6 +15,7 @@ namespace
     enum class AsyncCommandType
     {
         Publish,
+        XAdd,
         HSet,
         Set,
         Del,
@@ -130,7 +131,9 @@ namespace
 
     void enqueue_async_error_result(int connection_id, const AsyncCommand& command, const std::string& message)
     {
-        if (command.type != AsyncCommandType::Get && command.type != AsyncCommandType::HGet)
+        if (command.type != AsyncCommandType::Get
+            && command.type != AsyncCommandType::HGet
+            && command.type != AsyncCommandType::XAdd)
         {
             return;
         }
@@ -138,7 +141,9 @@ namespace
         AsyncResult result;
         result.connection_id = connection_id;
         result.request_id = command.request_id;
-        result.command = command.type == AsyncCommandType::Get ? "get" : "hget";
+        result.command = command.type == AsyncCommandType::Get
+            ? "get"
+            : (command.type == AsyncCommandType::HGet ? "hget" : "xadd");
         result.status = -1;
         result.key = command.key;
         result.field = command.field;
@@ -216,6 +221,28 @@ namespace
             case AsyncCommandType::Publish:
                 redis.publish(command.key, command.value);
                 break;
+
+            case AsyncCommandType::XAdd:
+            {
+                AsyncResult result;
+                result.connection_id = connection_id;
+                result.request_id = command.request_id;
+                result.command = "xadd";
+                result.status = 0;
+                result.key = command.key;
+                result.field = command.field;
+                result.value = redis.command<std::string>(
+                    "XADD",
+                    command.key,
+                    "*",
+                    "event_id",
+                    command.field,
+                    "payload",
+                    command.value
+                );
+                enqueue_async_result(result);
+                break;
+            }
 
             case AsyncCommandType::HSet:
                 redis.hset(command.key, command.field, command.value);
@@ -366,32 +393,75 @@ namespace
                     {
                         execute_async_command(redis, connection->id, command);
                     }
-                    catch (const Error& e)
+                    catch (const ReplyError& e)
                     {
+                        // A Redis reply error (for example WRONGTYPE) is
+                        // deterministic for this command. Retrying it would
+                        // permanently head-of-line block the ordered queue.
                         set_connection_error(connection, e.what());
                         enqueue_async_error_result(connection->id, command, e.what());
+                        continue;
+                    }
+                    catch (const IoError& e)
+                    {
+                        {
+                            // The command may or may not have reached Redis.
+                            // Put it back at the head before reconnecting.
+                            // Event IDs make ambiguous XADD retries idempotent
+                            // at the application consumer.
+                            std::lock_guard<std::mutex> lock(connection->mutex);
+                            connection->queue.push_front(command);
+                        }
+                        set_connection_error(connection, e.what());
                         enqueue_async_connect_result(connection->id, 0, -1, e.what());
                         reconnect_notice_pending = true;
                         set_connection_state(connection, STATUS_RECONNECTING);
                         break;
+                    }
+                    catch (const ClosedError& e)
+                    {
+                        {
+                            std::lock_guard<std::mutex> lock(connection->mutex);
+                            connection->queue.push_front(command);
+                        }
+                        set_connection_error(connection, e.what());
+                        enqueue_async_connect_result(connection->id, 0, -1, e.what());
+                        reconnect_notice_pending = true;
+                        set_connection_state(connection, STATUS_RECONNECTING);
+                        break;
+                    }
+                    catch (const ProtoError& e)
+                    {
+                        {
+                            std::lock_guard<std::mutex> lock(connection->mutex);
+                            connection->queue.push_front(command);
+                        }
+                        set_connection_error(connection, e.what());
+                        enqueue_async_connect_result(connection->id, 0, -1, e.what());
+                        reconnect_notice_pending = true;
+                        set_connection_state(connection, STATUS_RECONNECTING);
+                        break;
+                    }
+                    catch (const Error& e)
+                    {
+                        // Formatting, range and local resource errors are not
+                        // repaired by reconnecting. Report them once and keep
+                        // later commands moving.
+                        set_connection_error(connection, e.what());
+                        enqueue_async_error_result(connection->id, command, e.what());
+                        continue;
                     }
                     catch (const std::exception& e)
                     {
                         set_connection_error(connection, e.what());
                         enqueue_async_error_result(connection->id, command, e.what());
-                        enqueue_async_connect_result(connection->id, 0, -1, e.what());
-                        reconnect_notice_pending = true;
-                        set_connection_state(connection, STATUS_RECONNECTING);
-                        break;
+                        continue;
                     }
                     catch (...)
                     {
                         set_connection_error(connection, "unknown Redis async command error");
                         enqueue_async_error_result(connection->id, command, "unknown Redis async command error");
-                        enqueue_async_connect_result(connection->id, 0, -1, "unknown Redis async command error");
-                        reconnect_notice_pending = true;
-                        set_connection_state(connection, STATUS_RECONNECTING);
-                        break;
+                        continue;
                     }
                 }
             }
@@ -627,6 +697,25 @@ namespace
         command.type = AsyncCommandType::Publish;
         command.key = MF_GetAmxString(amx, params[channel_param], 0, &len);
         command.value = MF_GetAmxString(amx, params[message_param], 1, &len);
+        return command;
+    }
+
+    AsyncCommand make_xadd_command(
+        AMX* amx,
+        cell* params,
+        int stream_param,
+        int event_id_param,
+        int payload_param,
+        int request_param
+    )
+    {
+        int len = 0;
+        AsyncCommand command;
+        command.type = AsyncCommandType::XAdd;
+        command.key = MF_GetAmxString(amx, params[stream_param], 0, &len);
+        command.field = MF_GetAmxString(amx, params[event_id_param], 1, &len);
+        command.value = MF_GetAmxString(amx, params[payload_param], 2, &len);
+        command.request_id = params[request_param];
         return command;
     }
 
@@ -892,6 +981,14 @@ cell redis_async_publish(AMX* amx, cell* params)
     return redis_async_publish_on(amx, params);
 }
 
+cell redis_async_xadd(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(
+        DEFAULT_CONNECTION_ID,
+        make_xadd_command(amx, params, 1, 2, 3, 4)
+    ) ? 0 : -1;
+}
+
 cell redis_async_hset_string(AMX* amx, cell* params)
 {
     return enqueue_async_command_on(DEFAULT_CONNECTION_ID, make_hset_string_command(amx, params, 1, 2, 3)) ? 0 : -1;
@@ -1004,6 +1101,14 @@ cell redis_async_publish_on(AMX* amx, cell* params)
     int channel_param = get_param_count(params) >= 3 ? 2 : 1;
     int message_param = get_param_count(params) >= 3 ? 3 : 2;
     return enqueue_async_command_on(connection_id, make_publish_command(amx, params, channel_param, message_param)) ? 0 : -1;
+}
+
+cell redis_async_xadd_on(AMX* amx, cell* params)
+{
+    return enqueue_async_command_on(
+        params[1],
+        make_xadd_command(amx, params, 2, 3, 4, 5)
+    ) ? 0 : -1;
 }
 
 cell redis_async_hset_string_on(AMX* amx, cell* params)

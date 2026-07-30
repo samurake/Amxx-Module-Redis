@@ -234,6 +234,16 @@ native redis_publish(const channel[], const message[]);
 native redis_async_publish(const channel[], const message[]);
 
 /*
+ * @note    Append one durable entry to a Redis Stream. The module writes the
+ *          fields "event_id" and "payload" and Redis allocates the stream ID.
+ *          The result is delivered through Redis_Async_OnResult with command
+ *          "xadd", field=event_id and value=stream ID.
+ *
+ * @return  0 is queued. -1 is error or queue full.
+ */
+native redis_async_xadd(const stream[], const event_id[], const payload[], request_id = 0);
+
+/*
  * @note    Enqueue a HSET command on the Redis worker thread. (for string)
  *
  * @return  0 is queued. -1 is error or queue full.
@@ -315,6 +325,7 @@ native redis_async_hget_integer(const key[], const field[], request_id = 0);
  *          by redis_async_open().
  */
 native redis_async_publish_on(connection_id, const channel[], const message[]);
+native redis_async_xadd_on(connection_id, const stream[], const event_id[], const payload[], request_id = 0);
 native redis_async_hset_string_on(connection_id, const key[], const field[], const value[]);
 native redis_async_hset_integer_on(connection_id, const key[], const field[], const value);
 native redis_async_set_string_on(connection_id, const key[], const value[], const ttl = 0, const type = 0, const keepttl = 0);

@@ -2,7 +2,7 @@
 ### Description:
 > This is a module for amxmodx that allows operations from HLDS to the Redis data store.
 
-Current fork version: `0.2.0-multi-async`.
+Current fork version: `0.3.0-streams`.
 
 Original author: Aoi.Kagase. Async queue maintainer: samurake.
 
@@ -65,6 +65,7 @@ redis_async_open(const hostip[], const port = 6379, const username[] = "", const
 redis_async_close(connection_id);
 redis_async_status(connection_id);
 redis_async_publish(const channel[], const message[]);
+redis_async_xadd(const stream[], const event_id[], const payload[], request_id = 0);
 redis_async_hset_string(const key[], const field[], const value[]);
 redis_async_hset_integer(const key[], const field[], const value);
 redis_async_set_string(const key[], const value[], const ttl = 0, const type = 0, const keepttl = 0);
@@ -91,6 +92,7 @@ New plugins that need independent endpoints or isolated queues should use
 new conn = redis_async_open("127.0.0.1", 6379, "", "secret", 200, "analytics");
 redis_async_publish_on(conn, "amxx:analytics", payload);
 redis_async_hset_string_on(conn, "amxx:analytics:events", event_id, payload);
+redis_async_xadd_on(conn, "amxx:analytics:stream", event_id, payload, 300);
 ```
 
 Return value is `0` when the command is queued and `-1` when Redis is not ready
@@ -167,6 +169,12 @@ while a handle is connecting or reconnecting are stored in that handle's bounded
 queue and flushed after reconnect. Queue-full, invalid-handle, and connection
 errors are available through `redis_async_last_error()` or
 `redis_async_last_error_on()`.
+
+Commands that fail because the connection breaks are returned to the head of
+their per-handle queue before reconnecting and receive only their eventual
+final result. Redis reply errors are reported without retrying so one malformed
+command cannot permanently block later traffic. `XADD` returns its allocated stream ID through
+`Redis_Async_OnResult`/`Redis_Async_OnResultEx` with command `xadd`.
 
 ### Async stress test
 
