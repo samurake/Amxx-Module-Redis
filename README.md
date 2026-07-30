@@ -2,7 +2,7 @@
 ### Description:
 > This is a module for amxmodx that allows operations from HLDS to the Redis data store.
 
-Current fork version: `0.3.0-streams`.
+Current fork version: `0.3.1-streams-hardened`.
 
 Original author: Aoi.Kagase. Async queue maintainer: samurake.
 
@@ -78,6 +78,9 @@ redis_async_hget_string(const key[], const field[], request_id = 0);
 redis_async_hget_integer(const key[], const field[], request_id = 0);
 redis_async_queue_size();
 redis_async_queue_size_on(connection_id);
+redis_async_queue_bytes();
+redis_async_queue_bytes_on(connection_id);
+redis_async_dropped_results();
 redis_async_set_queue_limit(limit);
 redis_async_last_error(output[], maxlength);
 redis_async_last_error_on(connection_id, output[], maxlength);
@@ -95,10 +98,31 @@ redis_async_hset_string_on(conn, "amxx:analytics:events", event_id, payload);
 redis_async_xadd_on(conn, "amxx:analytics:stream", event_id, payload, 300);
 ```
 
-Return value is `0` when the command is queued and `-1` when Redis is not ready
-or the queue is full. Commands queued after `redis_async_connect()` wait behind
-the worker-thread connection attempt; if that connection fails, async `GET` and
+Return value is `0` when the command is queued and `-1` when validation fails,
+Redis is not ready, a positive XADD request id is already pending, or a queue
+limit is reached. Commands queued after `redis_async_connect()` wait behind the
+worker-thread connection attempt; if that connection fails, async `GET` and
 `HGET` calls receive an error result.
+
+Each connection is bounded by both command count and queued bytes. The default
+limits are 4,096 commands and 2 MiB, including the command currently executing
+on the worker; the count can be lowered with
+`redis_async_set_queue_limit()` and is capped at 16,384. At most 16 independent
+async connections can exist. These hard bounds prevent a disconnected Redis
+endpoint from turning producer traffic into unbounded HLDS memory growth.
+Repeated connect calls against the default handle are also capped at 1,024
+pending callbacks while that handle is connecting or reconnecting.
+
+`XADD` uses a maximum-bounded Pawn string scan before allocating C++ copies,
+then rejects empty inputs, stream names over 191 bytes, event ids over 191
+bytes, and payloads over 8,191 bytes. Durable callers should use a positive
+request id and keep it unique until the callback is delivered. Request id `0`
+remains available only for legacy, deliberately uncorrelated calls. The module
+rejects a duplicate positive XADD request id while the earlier request is
+queued, executing, or awaiting main-thread callback dispatch. Each connection
+also accepts at most 256 XADD submissions per one-second window; excess calls
+return `-1`, allowing the producer to back off instead of overwhelming Redis
+and its AOF rewrite buffer.
 
 `redis_async_connect()` validates host/port before starting the worker. Invalid
 parameters, duplicate async connect attempts, worker start failures, and worker
@@ -175,6 +199,38 @@ their per-handle queue before reconnecting and receive only their eventual
 final result. Redis reply errors are reported without retrying so one malformed
 command cannot permanently block later traffic. `XADD` returns its allocated stream ID through
 `Redis_Async_OnResult`/`Redis_Async_OnResultEx` with command `xadd`.
+
+Never ignore the enqueue return value. A durable producer must retain its local
+record, apply backoff, and retry later when `redis_async_xadd*()` returns `-1`.
+It must also validate `connection_id`, `request_id`, command, stream key,
+`event_id`, status, and the returned `<milliseconds>-<sequence>` stream id
+before releasing that local record.
+
+Queue admission is not a durability acknowledgement. Even an XADD success
+callback only establishes acceptance by the Redis primary; the host's
+`appendonly`, `appendfsync`, snapshot, and replication policy determines the
+actual recovery-point objective. Ambiguous reconnect retries are at-least-once,
+so consumers must deduplicate by `event_id`. The module does not trigger
+`BGSAVE` on unload or map transition; Redis persistence scheduling belongs to
+the host.
+
+See [`docs/ASYNC_XADD_HARDENING.md`](docs/ASYNC_XADD_HARDENING.md) for the
+complete producer contract and host validation checklist.
+
+### XADD host validation
+
+Compile and load `redis_xadd_validation_test.sma` on the isolated host, set its
+protected Redis connection cvars, then run this from the server console:
+
+```text
+redis_xadd_validate
+```
+
+The plugin tests native input boundaries, exact-limit acceptance, duplicate
+pending request IDs, callback correlation, Redis stream-ID syntax, and the
+per-connection XADD rate limit. The module is not approved until the final
+validation line reports `result=PASS` and the remaining outage/AOF checks in
+the hardening guide pass.
 
 ### Async stress test
 

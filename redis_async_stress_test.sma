@@ -28,6 +28,10 @@ new g_default_connected
 new g_handle1_connected
 new g_handle2_connected
 new g_tick
+new g_handle1_xadd_pending
+new g_handle2_xadd_pending
+new g_handle1_xadd_event[64]
+new g_handle2_xadd_event[64]
 
 public plugin_init()
 {
@@ -134,9 +138,49 @@ public Redis_Async_OnResult(request_id, command[], status, key[], field[], value
 
 public Redis_Async_OnResultEx(connection_id, request_id, command[], status, key[], field[], value[])
 {
+    if(request_id == REQ_HANDLE1_XADD || request_id == REQ_HANDLE2_XADD)
+    {
+        new expectedHandle = request_id == REQ_HANDLE1_XADD
+            ? g_handle1
+            : g_handle2
+        new expectedPending = request_id == REQ_HANDLE1_XADD
+            ? g_handle1_xadd_pending
+            : g_handle2_xadd_pending
+        new expectedEvent[64], expectedStream[64]
+        if(request_id == REQ_HANDLE1_XADD)
+        {
+            copy(expectedEvent, charsmax(expectedEvent), g_handle1_xadd_event)
+            copy(expectedStream, charsmax(expectedStream), "amxx:test:async:stream:handle1")
+        }
+        else
+        {
+            copy(expectedEvent, charsmax(expectedEvent), g_handle2_xadd_event)
+            copy(expectedStream, charsmax(expectedStream), "amxx:test:async:stream:handle2")
+        }
+        if(!expectedPending || connection_id != expectedHandle
+            || !equal(field, expectedEvent))
+        {
+            server_print("[Redis Async Stress][FAIL] stale XADD callback request=%d", request_id)
+            return
+        }
+
+        if(request_id == REQ_HANDLE1_XADD) g_handle1_xadd_pending = 0
+        else g_handle2_xadd_pending = 0
+        new valid = status == 0
+            && equal(command, "xadd")
+            && equal(key, expectedStream)
+            && IsRedisStreamId(value)
+        server_print("[Redis Async Stress][%s] XADD connection_id=%d request=%d event_id=%s stream_id=%s",
+            valid ? "PASS" : "FAIL",
+            connection_id,
+            request_id,
+            field,
+            value)
+        return
+    }
+
     if(request_id == REQ_HANDLE1_GET || request_id == REQ_HANDLE2_GET
-        || request_id == REQ_HANDLE1_HGET || request_id == REQ_HANDLE2_HGET
-        || request_id == REQ_HANDLE1_XADD || request_id == REQ_HANDLE2_XADD)
+        || request_id == REQ_HANDLE1_HGET || request_id == REQ_HANDLE2_HGET)
     {
         server_print("[Redis Async Stress][%s] result connection_id=%d request=%d command=%s status=%d key=%s field=%s value=%s",
             status == 0 ? "PASS" : "FAIL",
@@ -170,9 +214,29 @@ public StressTick()
 
     if(g_handle1 > 0)
     {
-        new eventId[64]
-        formatex(eventId, charsmax(eventId), "handle1:%d", g_tick)
-        redis_async_xadd_on(g_handle1, "amxx:test:async:stream:handle1", eventId, payload, REQ_HANDLE1_XADD)
+        if(!g_handle1_xadd_pending)
+        {
+            new written = formatex(g_handle1_xadd_event, charsmax(g_handle1_xadd_event), "handle1:%d", g_tick)
+            if(written <= 0 || written >= charsmax(g_handle1_xadd_event)
+                || strlen("amxx:test:async:stream:handle1") > REDIS_ASYNC_XADD_MAX_STREAM_BYTES
+                || strlen(g_handle1_xadd_event) > REDIS_ASYNC_XADD_MAX_EVENT_ID_BYTES
+                || strlen(payload) > REDIS_ASYNC_XADD_MAX_PAYLOAD_BYTES)
+            {
+                server_print("[Redis Async Stress][FAIL] handle1 unsafe XADD input")
+            }
+            else
+            {
+                new queueResult = redis_async_xadd_on(
+                    g_handle1,
+                    "amxx:test:async:stream:handle1",
+                    g_handle1_xadd_event,
+                    payload,
+                    REQ_HANDLE1_XADD
+                )
+                if(queueResult != 0) PrintLastError(g_handle1, "handle1 XADD")
+                else g_handle1_xadd_pending = 1
+            }
+        }
         redis_async_publish_on(g_handle1, "amxx:test:async:handle1", payload)
         redis_async_hset_string_on(g_handle1, "amxx:test:async:events:handle1", "last", payload)
         redis_async_hset_integer_on(g_handle1, "amxx:test:async:events:handle1", "last_timestamp", timestamp)
@@ -182,9 +246,29 @@ public StressTick()
 
     if(g_handle2 > 0)
     {
-        new eventId[64]
-        formatex(eventId, charsmax(eventId), "handle2:%d", g_tick)
-        redis_async_xadd_on(g_handle2, "amxx:test:async:stream:handle2", eventId, payload, REQ_HANDLE2_XADD)
+        if(!g_handle2_xadd_pending)
+        {
+            new written = formatex(g_handle2_xadd_event, charsmax(g_handle2_xadd_event), "handle2:%d", g_tick)
+            if(written <= 0 || written >= charsmax(g_handle2_xadd_event)
+                || strlen("amxx:test:async:stream:handle2") > REDIS_ASYNC_XADD_MAX_STREAM_BYTES
+                || strlen(g_handle2_xadd_event) > REDIS_ASYNC_XADD_MAX_EVENT_ID_BYTES
+                || strlen(payload) > REDIS_ASYNC_XADD_MAX_PAYLOAD_BYTES)
+            {
+                server_print("[Redis Async Stress][FAIL] handle2 unsafe XADD input")
+            }
+            else
+            {
+                new queueResult = redis_async_xadd_on(
+                    g_handle2,
+                    "amxx:test:async:stream:handle2",
+                    g_handle2_xadd_event,
+                    payload,
+                    REQ_HANDLE2_XADD
+                )
+                if(queueResult != 0) PrintLastError(g_handle2, "handle2 XADD")
+                else g_handle2_xadd_pending = 1
+            }
+        }
         redis_async_publish_on(g_handle2, "amxx:test:async:handle2", payload)
         redis_async_hset_string_on(g_handle2, "amxx:test:async:events:handle2", "last", payload)
         redis_async_hset_integer_on(g_handle2, "amxx:test:async:events:handle2", "last_timestamp", timestamp)
@@ -214,6 +298,18 @@ stock PrintLastError(connection_id, const label[])
     }
 
     server_print("[Redis Async Stress][FAIL] %s: %s", label, error)
+}
+
+stock IsRedisStreamId(const value[])
+{
+    new separator = contain(value, "-")
+    if(separator < 1 || !value[separator + 1]) return 0
+    for(new i; value[i] != EOS; i++)
+    {
+        if(i == separator) continue
+        if(value[i] < '0' || value[i] > '9') return 0
+    }
+    return 1
 }
 
 stock Float:FloatMax(Float:left, Float:right)

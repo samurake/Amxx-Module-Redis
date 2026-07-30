@@ -11,6 +11,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <limits>
+#include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -72,6 +75,8 @@ extern cell redis_async_set_integer(AMX* amx, cell* params);
 extern cell redis_async_del_key(AMX* amx, cell* params);
 extern cell redis_async_hdel_field(AMX* amx, cell* params);
 extern cell redis_async_queue_size(AMX* amx, cell* params);
+extern cell redis_async_queue_bytes(AMX* amx, cell* params);
+extern cell redis_async_dropped_results(AMX* amx, cell* params);
 extern cell redis_async_set_queue_limit(AMX* amx, cell* params);
 extern cell redis_async_last_error(AMX* amx, cell* params);
 extern cell redis_async_last_error_on(AMX* amx, cell* params);
@@ -92,6 +97,7 @@ extern cell redis_async_get_integer_on(AMX* amx, cell* params);
 extern cell redis_async_hget_string_on(AMX* amx, cell* params);
 extern cell redis_async_hget_integer_on(AMX* amx, cell* params);
 extern cell redis_async_queue_size_on(AMX* amx, cell* params);
+extern cell redis_async_queue_bytes_on(AMX* amx, cell* params);
 
 extern cell redis_register_subscriber(AMX* amx, cell* params);
 extern cell redis_start_subscribe(AMX* amx, cell* params);

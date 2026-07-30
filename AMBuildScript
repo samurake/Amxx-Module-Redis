@@ -71,6 +71,10 @@ if cxx.like('msvc'):
   ]
 
 if cxx.like('gcc'):
+  cxx.defines += [
+    '_FORTIFY_SOURCE=2',
+  ]
+
   cxx.cflags += [
     '-Wall',
     '-Werror',
@@ -78,6 +82,7 @@ if cxx.like('gcc'):
     '-Wno-error=unused-variable',
     '-Wno-unused-value',
     '-fno-strict-aliasing',
+    '-fstack-protector-strong',
     '-fPIC',
     '-m32',
     '-std=c++11',
@@ -97,6 +102,9 @@ if cxx.like('gcc'):
     '-m32',
     '-static-libgcc',
     '-static-libstdc++',
+    '-Wl,-z,relro',
+    '-Wl,-z,now',
+    '-Wl,-z,noexecstack',
   ]
 
   if builder.options.opt == '1':
@@ -104,7 +112,8 @@ if cxx.like('gcc'):
 
 elif cxx.like('msvc'):
   cxx.cflags += [
-    '/W3'
+    '/W3',
+    '/sdl',
   ]
 
   cxx.cxxflags += [
@@ -116,6 +125,8 @@ elif cxx.like('msvc'):
     os.path.join(builder.sourcePath, 'public', 'hiredis', 'build', 'Release', 'hiredis.lib'),
     '/MACHINE:X86',
     '/SUBSYSTEM:WINDOWS',
+    '/DYNAMICBASE',
+    '/NXCOMPAT',
     '/EXPORT:GiveFnptrsToDll=_GiveFnptrsToDll@8,@1',
     'kernel32.lib',
     'ws2_32.lib',

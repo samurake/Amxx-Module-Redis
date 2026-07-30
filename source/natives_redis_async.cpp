@@ -1,4 +1,5 @@
 #include "module.h"
+#include "async_safety.h"
 
 using namespace sw::redis;
 
@@ -11,6 +12,20 @@ namespace
     const int STATUS_RECONNECTING = 2;
     const int STATUS_CLOSING = 3;
     const int CONNECT_STATUS_CLOSED = -2;
+    const size_t DEFAULT_ASYNC_QUEUE_LIMIT =
+        redis_async_safety::default_queue_limit;
+    const size_t MAX_ASYNC_QUEUE_LIMIT =
+        redis_async_safety::max_queue_limit;
+    const size_t DEFAULT_ASYNC_QUEUE_BYTE_LIMIT =
+        redis_async_safety::default_queue_byte_limit;
+    const size_t MAX_ASYNC_CONNECTIONS =
+        redis_async_safety::max_connections;
+    const size_t MAX_PENDING_CONNECT_REQUESTS =
+        redis_async_safety::max_pending_connect_requests;
+    const size_t MAX_ASYNC_RESULT_COUNT =
+        redis_async_safety::max_result_count;
+    const size_t MAX_ASYNC_ERROR_BYTES =
+        redis_async_safety::max_error_bytes;
 
     enum class AsyncCommandType
     {
@@ -67,7 +82,13 @@ namespace
         std::thread* worker = nullptr;
         bool closing = false;
         int state = STATUS_STOPPED;
-        size_t queue_limit = 4096;
+        size_t queue_limit = DEFAULT_ASYNC_QUEUE_LIMIT;
+        size_t pending_command_count = 0;
+        size_t queued_bytes = 0;
+        size_t queue_byte_limit = DEFAULT_ASYNC_QUEUE_BYTE_LIMIT;
+        std::set<int> pending_xadd_request_ids;
+        std::chrono::steady_clock::time_point xadd_rate_window_started;
+        size_t xadd_queued_in_window = 0;
         std::string last_error;
     };
 
@@ -76,13 +97,22 @@ namespace
     std::deque<AsyncResult> g_async_results;
     std::deque<AsyncConnectResult> g_async_connect_results;
     std::mutex g_async_results_mutex;
-    size_t g_async_queue_limit = 4096;
+    size_t g_async_dropped_results = 0;
+    size_t g_async_dropped_connect_results = 0;
+    size_t g_async_queue_limit = DEFAULT_ASYNC_QUEUE_LIMIT;
     std::string g_async_last_error;
     int g_next_connection_id = DEFAULT_CONNECTION_ID + 1;
 
     int get_param_count(cell* params)
     {
         return static_cast<int>(params[0] / sizeof(cell));
+    }
+
+    cell bounded_cell_count(size_t value)
+    {
+        const size_t maximum =
+            static_cast<size_t>(std::numeric_limits<cell>::max());
+        return static_cast<cell>(value > maximum ? maximum : value);
     }
 
     bool same_options(const ConnectionOptions& left, const ConnectionOptions& right)
@@ -111,10 +141,49 @@ namespace
         set_global_async_error(message);
     }
 
-    void enqueue_async_result(const AsyncResult& result)
+    size_t async_command_bytes(const AsyncCommand& command)
+    {
+        return sizeof(AsyncCommand)
+            + command.key.size()
+            + command.field.size()
+            + command.value.size();
+    }
+
+    void release_async_command_resources(
+        const std::shared_ptr<AsyncConnection>& connection,
+        const AsyncCommand& command
+    )
+    {
+        const size_t bytes = async_command_bytes(command);
+        std::lock_guard<std::mutex> lock(connection->mutex);
+        if (connection->pending_command_count > 0)
+        {
+            connection->pending_command_count--;
+        }
+        connection->queued_bytes = bytes <= connection->queued_bytes
+            ? connection->queued_bytes - bytes
+            : 0;
+    }
+
+    std::string bounded_async_error(const std::string& error)
+    {
+        return error.size() <= MAX_ASYNC_ERROR_BYTES
+            ? error
+            : error.substr(0, MAX_ASYNC_ERROR_BYTES);
+    }
+
+    bool enqueue_async_result(const AsyncResult& result)
     {
         std::lock_guard<std::mutex> lock(g_async_results_mutex);
+        if (g_async_results.size() >= MAX_ASYNC_RESULT_COUNT)
+        {
+            g_async_dropped_results++;
+            g_async_last_error = "async result queue full";
+            redis_set_last_error(g_async_last_error.c_str());
+            return false;
+        }
         g_async_results.push_back(result);
+        return true;
     }
 
     void enqueue_async_connect_result(int connection_id, int request_id, int status, const std::string& error)
@@ -123,10 +192,68 @@ namespace
         result.connection_id = connection_id;
         result.request_id = request_id;
         result.status = status;
-        result.error = error;
+        result.error = bounded_async_error(error);
 
         std::lock_guard<std::mutex> lock(g_async_results_mutex);
+        if (g_async_connect_results.size() >= MAX_ASYNC_RESULT_COUNT)
+        {
+            g_async_dropped_connect_results++;
+            g_async_last_error = "async connection result queue full";
+            redis_set_last_error(g_async_last_error.c_str());
+            return;
+        }
         g_async_connect_results.push_back(result);
+    }
+
+    void discard_async_results_for_connection(int connection_id)
+    {
+        std::lock_guard<std::mutex> lock(g_async_results_mutex);
+        for (auto iter = g_async_results.begin();
+            iter != g_async_results.end();)
+        {
+            if (iter->connection_id == connection_id)
+            {
+                iter = g_async_results.erase(iter);
+            }
+            else
+            {
+                ++iter;
+            }
+        }
+        for (auto iter = g_async_connect_results.begin();
+            iter != g_async_connect_results.end();)
+        {
+            if (iter->connection_id == connection_id)
+            {
+                iter = g_async_connect_results.erase(iter);
+            }
+            else
+            {
+                ++iter;
+            }
+        }
+    }
+
+    void release_pending_xadd_request(int connection_id, int request_id)
+    {
+        if (request_id <= 0)
+        {
+            return;
+        }
+
+        std::shared_ptr<AsyncConnection> connection;
+        {
+            std::lock_guard<std::mutex> lock(g_connections_mutex);
+            auto iter = g_connections.find(connection_id);
+            if (iter == g_connections.end())
+            {
+                return;
+            }
+            connection = iter->second;
+        }
+
+        std::lock_guard<std::mutex> lock(connection->mutex);
+        connection->pending_xadd_request_ids.erase(request_id);
     }
 
     void enqueue_async_error_result(int connection_id, const AsyncCommand& command, const std::string& message)
@@ -147,8 +274,12 @@ namespace
         result.status = -1;
         result.key = command.key;
         result.field = command.field;
-        result.value = message;
-        enqueue_async_result(result);
+        result.value = bounded_async_error(message);
+        if (!enqueue_async_result(result)
+            && command.type == AsyncCommandType::XAdd)
+        {
+            release_pending_xadd_request(connection_id, command.request_id);
+        }
     }
 
     void drain_pending_connect_results(const std::shared_ptr<AsyncConnection>& connection, int status, const std::string& error)
@@ -240,7 +371,22 @@ namespace
                     "payload",
                     command.value
                 );
-                enqueue_async_result(result);
+                if (!redis_async_safety::is_redis_stream_id(
+                    result.value.c_str(),
+                    result.value.size()
+                ))
+                {
+                    throw std::runtime_error(
+                        "xadd returned an invalid Redis stream id"
+                    );
+                }
+                if (!enqueue_async_result(result))
+                {
+                    release_pending_xadd_request(
+                        connection_id,
+                        command.request_id
+                    );
+                }
                 break;
             }
 
@@ -392,6 +538,7 @@ namespace
                     try
                     {
                         execute_async_command(redis, connection->id, command);
+                        release_async_command_resources(connection, command);
                     }
                     catch (const ReplyError& e)
                     {
@@ -400,6 +547,7 @@ namespace
                         // permanently head-of-line block the ordered queue.
                         set_connection_error(connection, e.what());
                         enqueue_async_error_result(connection->id, command, e.what());
+                        release_async_command_resources(connection, command);
                         continue;
                     }
                     catch (const IoError& e)
@@ -449,18 +597,21 @@ namespace
                         // later commands moving.
                         set_connection_error(connection, e.what());
                         enqueue_async_error_result(connection->id, command, e.what());
+                        release_async_command_resources(connection, command);
                         continue;
                     }
                     catch (const std::exception& e)
                     {
                         set_connection_error(connection, e.what());
                         enqueue_async_error_result(connection->id, command, e.what());
+                        release_async_command_resources(connection, command);
                         continue;
                     }
                     catch (...)
                     {
                         set_connection_error(connection, "unknown Redis async command error");
                         enqueue_async_error_result(connection->id, command, "unknown Redis async command error");
+                        release_async_command_resources(connection, command);
                         continue;
                     }
                 }
@@ -544,6 +695,18 @@ namespace
 
     int create_connection(const ConnectionOptions& options, int request_id, const std::string& name, bool use_default)
     {
+        if (g_connections.size() >= MAX_ASYNC_CONNECTIONS)
+        {
+            set_global_async_error("async connection limit reached");
+            enqueue_async_connect_result(
+                use_default ? DEFAULT_CONNECTION_ID : 0,
+                request_id,
+                -1,
+                "async connection limit reached"
+            );
+            return -1;
+        }
+
         std::shared_ptr<AsyncConnection> connection(new AsyncConnection());
         connection->id = use_default ? DEFAULT_CONNECTION_ID : g_next_connection_id++;
         connection->name = name;
@@ -610,6 +773,20 @@ namespace
                     connected = connection->state == STATUS_CONNECTED;
                     if (!connected)
                     {
+                        if (connection->pending_connect_requests.size()
+                            >= MAX_PENDING_CONNECT_REQUESTS)
+                        {
+                            error = "async connect request limit reached";
+                            connection->last_error = error;
+                            set_global_async_error(error);
+                            enqueue_async_connect_result(
+                                DEFAULT_CONNECTION_ID,
+                                request_id,
+                                -1,
+                                error
+                            );
+                            return -1;
+                        }
                         connection->pending_connect_requests.push_back(request_id);
                     }
                 }
@@ -655,14 +832,91 @@ namespace
                 return false;
             }
 
-            if (connection->queue.size() >= connection->queue_limit)
+            const size_t command_bytes = async_command_bytes(command);
+            if (!redis_async_safety::queue_has_capacity(
+                connection->pending_command_count,
+                connection->queue_limit,
+                connection->queued_bytes,
+                connection->queue_byte_limit,
+                command_bytes
+            ))
             {
-                connection->last_error = "async queue full";
-                set_global_async_error("async queue full");
+                const char* error = connection->pending_command_count
+                    >= connection->queue_limit
+                        ? "async queue full"
+                        : "async queue byte limit reached";
+                connection->last_error = error;
+                set_global_async_error(error);
                 return false;
             }
 
-            connection->queue.push_back(command);
+            if (command.type == AsyncCommandType::XAdd
+                && command.request_id > 0
+                && connection->pending_xadd_request_ids.find(command.request_id)
+                    != connection->pending_xadd_request_ids.end())
+            {
+                connection->last_error = "async xadd request_id is already pending";
+                set_global_async_error(
+                    "async xadd request_id is already pending"
+                );
+                return false;
+            }
+
+            if (command.type == AsyncCommandType::XAdd)
+            {
+                const std::chrono::steady_clock::time_point now =
+                    std::chrono::steady_clock::now();
+                if (connection->xadd_rate_window_started.time_since_epoch()
+                        .count() == 0
+                    || now - connection->xadd_rate_window_started
+                        >= std::chrono::seconds(1))
+                {
+                    connection->xadd_rate_window_started = now;
+                    connection->xadd_queued_in_window = 0;
+                }
+                if (!redis_async_safety::xadd_rate_has_capacity(
+                    connection->xadd_queued_in_window
+                ))
+                {
+                    connection->last_error = "async xadd rate limit reached";
+                    set_global_async_error(
+                        "async xadd rate limit reached"
+                    );
+                    return false;
+                }
+            }
+
+            bool pending_xadd_inserted = false;
+            if (command.type == AsyncCommandType::XAdd
+                && command.request_id > 0)
+            {
+                pending_xadd_inserted =
+                    connection->pending_xadd_request_ids.insert(
+                        command.request_id
+                    ).second;
+            }
+
+            try
+            {
+                connection->queue.push_back(command);
+            }
+            catch (...)
+            {
+                if (pending_xadd_inserted)
+                {
+                    connection->pending_xadd_request_ids.erase(
+                        command.request_id
+                    );
+                }
+                throw;
+            }
+
+            connection->pending_command_count++;
+            connection->queued_bytes += command_bytes;
+            if (command.type == AsyncCommandType::XAdd)
+            {
+                connection->xadd_queued_in_window++;
+            }
         }
 
         connection->cv.notify_one();
@@ -700,23 +954,183 @@ namespace
         return command;
     }
 
-    AsyncCommand make_xadd_command(
+    bool make_xadd_command(
         AMX* amx,
         cell* params,
+        int stream_param,
+        int event_id_param,
+        int payload_param,
+        int request_param,
+        AsyncCommand& command,
+        std::string& error
+    )
+    {
+        command.type = AsyncCommandType::XAdd;
+        command.request_id = params[request_param];
+        if (command.request_id < 0)
+        {
+            error = "xadd request_id must be zero or positive";
+            return false;
+        }
+
+        cell* stream_address = MF_GetAmxAddr(amx, params[stream_param]);
+        cell* event_id_address = MF_GetAmxAddr(amx, params[event_id_param]);
+        cell* payload_address = MF_GetAmxAddr(amx, params[payload_param]);
+        if (stream_address == nullptr
+            || event_id_address == nullptr
+            || payload_address == nullptr)
+        {
+            error = "xadd input address is invalid";
+            return false;
+        }
+
+        size_t stream_length = 0;
+        size_t event_id_length = 0;
+        size_t payload_length = 0;
+        if (!redis_async_safety::bounded_string_length(
+            stream_address,
+            redis_async_safety::max_xadd_stream_bytes,
+            stream_length
+        ))
+        {
+            error = "xadd stream exceeds 191 bytes";
+            return false;
+        }
+        if (!redis_async_safety::bounded_string_length(
+            event_id_address,
+            redis_async_safety::max_xadd_event_id_bytes,
+            event_id_length
+        ))
+        {
+            error = "xadd event_id exceeds 191 bytes";
+            return false;
+        }
+        if (!redis_async_safety::bounded_string_length(
+            payload_address,
+            redis_async_safety::max_xadd_payload_bytes,
+            payload_length
+        ))
+        {
+            error = "xadd payload exceeds 8191 bytes";
+            return false;
+        }
+
+        const redis_async_safety::XAddValidation validation =
+            redis_async_safety::validate_xadd(
+                stream_length,
+                event_id_length,
+                payload_length,
+                command.request_id
+            );
+        switch (validation)
+        {
+            case redis_async_safety::XAddValidation::Valid:
+                break;
+            case redis_async_safety::XAddValidation::EmptyStream:
+                error = "xadd stream is empty";
+                break;
+            case redis_async_safety::XAddValidation::StreamTooLarge:
+                error = "xadd stream exceeds 191 bytes";
+                break;
+            case redis_async_safety::XAddValidation::EmptyEventId:
+                error = "xadd event_id is empty";
+                break;
+            case redis_async_safety::XAddValidation::EventIdTooLarge:
+                error = "xadd event_id exceeds 191 bytes";
+                break;
+            case redis_async_safety::XAddValidation::EmptyPayload:
+                error = "xadd payload is empty";
+                break;
+            case redis_async_safety::XAddValidation::PayloadTooLarge:
+                error = "xadd payload exceeds 8191 bytes";
+                break;
+            case redis_async_safety::XAddValidation::NegativeRequestId:
+                error = "xadd request_id must be zero or positive";
+                break;
+        }
+
+        if (validation != redis_async_safety::XAddValidation::Valid)
+        {
+            return false;
+        }
+
+        int copied_length = 0;
+        command.key = MF_GetAmxString(
+            amx,
+            params[stream_param],
+            0,
+            &copied_length
+        );
+        command.field = MF_GetAmxString(
+            amx,
+            params[event_id_param],
+            1,
+            &copied_length
+        );
+        command.value = MF_GetAmxString(
+            amx,
+            params[payload_param],
+            2,
+            &copied_length
+        );
+
+        if (command.key.size() != stream_length
+            || command.field.size() != event_id_length
+            || command.value.size() != payload_length)
+        {
+            error = "xadd input changed while being copied";
+            return false;
+        }
+
+        return true;
+    }
+
+    cell enqueue_xadd_command_on(
+        AMX* amx,
+        cell* params,
+        int connection_id,
         int stream_param,
         int event_id_param,
         int payload_param,
         int request_param
     )
     {
-        int len = 0;
-        AsyncCommand command;
-        command.type = AsyncCommandType::XAdd;
-        command.key = MF_GetAmxString(amx, params[stream_param], 0, &len);
-        command.field = MF_GetAmxString(amx, params[event_id_param], 1, &len);
-        command.value = MF_GetAmxString(amx, params[payload_param], 2, &len);
-        command.request_id = params[request_param];
-        return command;
+        try
+        {
+            AsyncCommand command;
+            std::string error;
+            if (!make_xadd_command(
+                amx,
+                params,
+                stream_param,
+                event_id_param,
+                payload_param,
+                request_param,
+                command,
+                error
+            ))
+            {
+                set_global_async_error(error);
+                return -1;
+            }
+
+            return enqueue_async_command_on(
+                connection_id,
+                command
+            ) ? 0 : -1;
+        }
+        catch (const std::exception& exception)
+        {
+            set_global_async_error(
+                bounded_async_error(exception.what())
+            );
+            return -1;
+        }
+        catch (...)
+        {
+            set_global_async_error("unknown xadd enqueue error");
+            return -1;
+        }
     }
 
     AsyncCommand make_hset_string_command(AMX* amx, cell* params, int key_param, int field_param, int value_param)
@@ -893,6 +1307,17 @@ void redis_dispatch_async_results()
             g_async_results.pop_front();
         }
 
+        if (result.command == "xadd")
+        {
+            // Release immediately before invoking Pawn so a callback can
+            // safely retry the same logical slot without racing a stale
+            // request that is still queued or awaiting dispatch.
+            release_pending_xadd_request(
+                result.connection_id,
+                result.request_id
+            );
+        }
+
         if (ForwardRedisAsyncOnResultEx >= 0)
         {
             MF_ExecuteForward(
@@ -924,22 +1349,48 @@ void redis_dispatch_async_results()
 
 cell redis_async_connect(AMX* amx, cell* params)
 {
-    ConnectionOptions options = read_options(amx, params, 1, 2, 3, 4);
-    return open_async_connection(options, params[5], "", true, true);
+    try
+    {
+        ConnectionOptions options = read_options(amx, params, 1, 2, 3, 4);
+        return open_async_connection(options, params[5], "", true, true);
+    }
+    catch (const std::exception& exception)
+    {
+        set_global_async_error(bounded_async_error(exception.what()));
+        return -1;
+    }
+    catch (...)
+    {
+        set_global_async_error("unknown async connect error");
+        return -1;
+    }
 }
 
 cell redis_async_open(AMX* amx, cell* params)
 {
-    ConnectionOptions options = read_options(amx, params, 1, 2, 3, 4);
-
-    int len = 0;
-    std::string name;
-    if (get_param_count(params) >= 6)
+    try
     {
-        name = MF_GetAmxString(amx, params[6], 3, &len);
-    }
+        ConnectionOptions options = read_options(amx, params, 1, 2, 3, 4);
 
-    return open_async_connection(options, params[5], name, false, false);
+        int len = 0;
+        std::string name;
+        if (get_param_count(params) >= 6)
+        {
+            name = MF_GetAmxString(amx, params[6], 3, &len);
+        }
+
+        return open_async_connection(options, params[5], name, false, false);
+    }
+    catch (const std::exception& exception)
+    {
+        set_global_async_error(bounded_async_error(exception.what()));
+        return -1;
+    }
+    catch (...)
+    {
+        set_global_async_error("unknown async open error");
+        return -1;
+    }
 }
 
 cell redis_async_close(AMX* amx, cell* params)
@@ -961,6 +1412,7 @@ cell redis_async_close(AMX* amx, cell* params)
     }
 
     stop_connection(connection);
+    discard_async_results_for_connection(connection_id);
     return 0;
 }
 
@@ -983,10 +1435,15 @@ cell redis_async_publish(AMX* amx, cell* params)
 
 cell redis_async_xadd(AMX* amx, cell* params)
 {
-    return enqueue_async_command_on(
+    return enqueue_xadd_command_on(
+        amx,
+        params,
         DEFAULT_CONNECTION_ID,
-        make_xadd_command(amx, params, 1, 2, 3, 4)
-    ) ? 0 : -1;
+        1,
+        2,
+        3,
+        4
+    );
 }
 
 cell redis_async_hset_string(AMX* amx, cell* params)
@@ -1044,10 +1501,35 @@ cell redis_async_queue_size(AMX* amx, cell* params)
     return redis_async_queue_size_on(amx, params);
 }
 
+cell redis_async_queue_bytes(AMX* amx, cell* params)
+{
+    return redis_async_queue_bytes_on(amx, params);
+}
+
+cell redis_async_dropped_results(AMX* amx, cell* params)
+{
+    std::lock_guard<std::mutex> lock(g_async_results_mutex);
+    const size_t maximum =
+        static_cast<size_t>(std::numeric_limits<cell>::max());
+    if (g_async_dropped_results >= maximum
+        || g_async_dropped_connect_results
+            >= maximum - g_async_dropped_results)
+    {
+        return std::numeric_limits<cell>::max();
+    }
+    return static_cast<cell>(
+        g_async_dropped_results + g_async_dropped_connect_results
+    );
+}
+
 cell redis_async_set_queue_limit(AMX* amx, cell* params)
 {
-    if (params[1] < 1)
+    if (params[1] < 1
+        || static_cast<size_t>(params[1]) > MAX_ASYNC_QUEUE_LIMIT)
     {
+        set_global_async_error(
+            "async queue limit must be between 1 and 16384"
+        );
         return -1;
     }
 
@@ -1105,10 +1587,15 @@ cell redis_async_publish_on(AMX* amx, cell* params)
 
 cell redis_async_xadd_on(AMX* amx, cell* params)
 {
-    return enqueue_async_command_on(
+    return enqueue_xadd_command_on(
+        amx,
+        params,
         params[1],
-        make_xadd_command(amx, params, 2, 3, 4, 5)
-    ) ? 0 : -1;
+        2,
+        3,
+        4,
+        5
+    );
 }
 
 cell redis_async_hset_string_on(AMX* amx, cell* params)
@@ -1171,5 +1658,20 @@ cell redis_async_queue_size_on(AMX* amx, cell* params)
     }
 
     std::lock_guard<std::mutex> lock(connection->mutex);
-    return static_cast<cell>(connection->queue.size());
+    return static_cast<cell>(connection->pending_command_count);
+}
+
+cell redis_async_queue_bytes_on(AMX* amx, cell* params)
+{
+    int connection_id = get_param_count(params) >= 1
+        ? params[1]
+        : DEFAULT_CONNECTION_ID;
+    auto connection = find_connection(connection_id);
+    if (!connection)
+    {
+        return -1;
+    }
+
+    std::lock_guard<std::mutex> lock(connection->mutex);
+    return bounded_cell_count(connection->queued_bytes);
 }

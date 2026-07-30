@@ -37,6 +37,8 @@ static cell Native_RedisAsyncGetInteger(AMX* amx, cell* params) {return redis_as
 static cell Native_RedisAsyncHGetString(AMX* amx, cell* params) {return redis_async_hget_string(amx, params); }
 static cell Native_RedisAsyncHGetInteger(AMX* amx, cell* params) {return redis_async_hget_integer(amx, params); }
 static cell Native_RedisAsyncQueueSize(AMX* amx, cell* params) {return redis_async_queue_size(amx, params); }
+static cell Native_RedisAsyncQueueBytes(AMX* amx, cell* params) {return redis_async_queue_bytes(amx, params); }
+static cell Native_RedisAsyncDroppedResults(AMX* amx, cell* params) {return redis_async_dropped_results(amx, params); }
 static cell Native_RedisAsyncSetQueueLimit(AMX* amx, cell* params) {return redis_async_set_queue_limit(amx, params); }
 static cell Native_RedisAsyncLastError(AMX* amx, cell* params) {return redis_async_last_error(amx, params); }
 static cell Native_RedisAsyncLastErrorOn(AMX* amx, cell* params) {return redis_async_last_error_on(amx, params); }
@@ -53,6 +55,7 @@ static cell Native_RedisAsyncGetIntegerOn(AMX* amx, cell* params) {return redis_
 static cell Native_RedisAsyncHGetStringOn(AMX* amx, cell* params) {return redis_async_hget_string_on(amx, params); }
 static cell Native_RedisAsyncHGetIntegerOn(AMX* amx, cell* params) {return redis_async_hget_integer_on(amx, params); }
 static cell Native_RedisAsyncQueueSizeOn(AMX* amx, cell* params) {return redis_async_queue_size_on(amx, params); }
+static cell Native_RedisAsyncQueueBytesOn(AMX* amx, cell* params) {return redis_async_queue_bytes_on(amx, params); }
 
 static cell Native_RedisRegisterSubscriber(AMX* amx, cell* params)	{return redis_register_subscriber(amx, params); }
 static cell Native_RedisStartSubscribe(AMX* amx, cell* params) {return redis_start_subscribe(amx, params); }
@@ -90,6 +93,8 @@ AMX_NATIVE_INFO g_natives[] =
 	{"redis_async_hget_string", Native_RedisAsyncHGetString},
 	{"redis_async_hget_integer", Native_RedisAsyncHGetInteger},
 	{"redis_async_queue_size", Native_RedisAsyncQueueSize},
+	{"redis_async_queue_bytes", Native_RedisAsyncQueueBytes},
+	{"redis_async_dropped_results", Native_RedisAsyncDroppedResults},
 	{"redis_async_set_queue_limit", Native_RedisAsyncSetQueueLimit},
 	{"redis_async_last_error", Native_RedisAsyncLastError},
 	{"redis_async_last_error_on", Native_RedisAsyncLastErrorOn},
@@ -106,6 +111,7 @@ AMX_NATIVE_INFO g_natives[] =
 	{"redis_async_hget_string_on", Native_RedisAsyncHGetStringOn},
 	{"redis_async_hget_integer_on", Native_RedisAsyncHGetIntegerOn},
 	{"redis_async_queue_size_on", Native_RedisAsyncQueueSizeOn},
+	{"redis_async_queue_bytes_on", Native_RedisAsyncQueueBytesOn},
 
 	{"redis_register_subscriber", Native_RedisRegisterSubscriber },
 	{"redis_start_subscribe", Native_RedisStartSubscribe },

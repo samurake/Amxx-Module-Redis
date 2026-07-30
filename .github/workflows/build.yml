@@ -46,6 +46,13 @@ jobs:
             libc6-dev libc6-dev-i386 linux-libc-dev \
             linux-libc-dev:i386 lib32z1-dev nasm cmake git
 
+      - name: Test async safety contract (Linux)
+        if: startsWith(runner.os, 'Linux')
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror \
+            tests/async_safety_test.cpp -o /tmp/redis_async_safety_test
+          /tmp/redis_async_safety_test
+
       - name: Install AMBuild (Linux)
         if: startsWith(runner.os, 'Linux')
         run: |
@@ -96,6 +103,13 @@ jobs:
         if: startsWith(runner.os, 'Windows')
         with:
           arch: x86
+
+      - name: Test async safety contract (Windows)
+        if: startsWith(runner.os, 'Windows')
+        shell: cmd
+        run: |
+          cl /nologo /std:c++14 /W4 /WX /EHsc tests\async_safety_test.cpp /Fe:redis_async_safety_test.exe
+          redis_async_safety_test.exe
 
       - name: Install Windows dependencies
         if: startsWith(runner.os, 'Windows')
@@ -153,3 +167,95 @@ jobs:
             build/redis_amxx/*.dll
             build/redis_amxx/*.pdb
           retention-days: 7
+
+  linux-release-compat:
+    runs-on: ubuntu-22.04
+    container: ubuntu:20.04
+    name: linux-release-glibc-2.31
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install build dependencies
+        run: |
+          dpkg --add-architecture i386
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            binutils ca-certificates cmake file gcc-multilib g++-multilib \
+            git make nasm \
+            python3 python3-pip python3-setuptools python3-wheel \
+            libc6-dev libc6-dev-i386 linux-libc-dev linux-libc-dev:i386 \
+            lib32stdc++6 lib32z1-dev
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Test async safety contract
+        run: |
+          g++ -std=c++11 -Wall -Wextra -Werror \
+            tests/async_safety_test.cpp -o /tmp/redis_async_safety_test
+          /tmp/redis_async_safety_test
+
+      - name: Install AMBuild
+        run: |
+          git clone --depth 1 https://github.com/alliedmodders/ambuild.git /tmp/ambuild
+          python3 -m pip install /tmp/ambuild
+
+      - name: Clone HLSDK dependencies
+        run: |
+          git clone --depth 1 https://github.com/alliedmodders/metamod-hl1 /tmp/metamod-am
+          git clone --depth 1 https://github.com/alliedmodders/hlsdk /tmp/hlsdk-am
+
+      - name: Build hiredis
+        run: |
+          make -C public/hiredis -j"$(nproc)" CFLAGS="-m32" LDFLAGS="-m32"
+
+      - name: Build redis-plus-plus
+        run: |
+          cmake -S public/redis-plus-plus -B public/redis-plus-plus/build \
+            -DHIREDIS_HEADER="${GITHUB_WORKSPACE}/public" \
+            -DHIREDIS_LIB="${GITHUB_WORKSPACE}/public/hiredis/libhiredis.a" \
+            -DENABLE_SSL=OFF \
+            -DCMAKE_CXX_FLAGS=-m32 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DREDIS_PLUS_PLUS_BUILD_TEST=OFF \
+            -DREDIS_PLUS_PLUS_CXX_STANDARD=11
+          cmake --build public/redis-plus-plus/build --parallel
+
+      - name: Build compatibility module
+        run: |
+          python3 configure.py --enable-optimize \
+            --metamod=/tmp/metamod-am \
+            --hlsdk=/tmp/hlsdk-am
+          ambuild obj-linux
+
+      - name: Verify release ABI and hardening
+        run: |
+          artifact=obj-linux/redis_amxx_i386/redis_amxx_i386.so
+          file "$artifact" | grep -F "ELF 32-bit LSB shared object, Intel 80386"
+          readelf -lW "$artifact" | grep -E "GNU_STACK.*RW "
+          readelf -dW "$artifact" | grep -F "BIND_NOW"
+          if readelf -dW "$artifact" | grep -F "TEXTREL"; then
+            echo "Artifact contains text relocations."
+            exit 1
+          fi
+          readelf --dyn-syms --wide "$artifact" | grep -F "__stack_chk_fail"
+          strings -a "$artifact" | grep -F "0.3.1-streams-hardened"
+          if readelf --version-info "$artifact" \
+            | grep -Eq "GLIBC_2\.(3[2-9]|[4-9][0-9])"; then
+            echo "Artifact requires glibc newer than 2.31."
+            exit 1
+          fi
+          sha256sum "$artifact" > redis_amxx_i386.so.sha256
+
+      - name: Upload compatibility artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-linux-glibc-2.31-${{ github.sha }}
+          path: |
+            obj-linux/redis_amxx_i386/redis_amxx_i386.so
+            redis_amxx_i386.so.sha256
+            redis.inc
+            redis_xadd_validation_test.sma
+            docs/ASYNC_XADD_HARDENING.md
+          retention-days: 14

@@ -8,6 +8,10 @@
 #define REDIS_ASYNC_STATUS_CONNECTING 1
 #define REDIS_ASYNC_STATUS_RECONNECTING 2
 #define REDIS_ASYNC_STATUS_CLOSING 3
+#define REDIS_ASYNC_XADD_MAX_STREAM_BYTES 191
+#define REDIS_ASYNC_XADD_MAX_EVENT_ID_BYTES 191
+#define REDIS_ASYNC_XADD_MAX_PAYLOAD_BYTES 8191
+#define REDIS_ASYNC_DEFAULT_QUEUE_BYTE_LIMIT 2097152
 
 
 /*
@@ -238,8 +242,17 @@ native redis_async_publish(const channel[], const message[]);
  *          fields "event_id" and "payload" and Redis allocates the stream ID.
  *          The result is delivered through Redis_Async_OnResult with command
  *          "xadd", field=event_id and value=stream ID.
+ *          Empty values and inputs above the REDIS_ASYNC_XADD_MAX_* limits
+ *          are rejected. Positive request ids must be unique until their
+ *          callback is dispatched; id 0 remains available for legacy callers
+ *          that intentionally do not correlate results.
+ *          A return value of 0 means accepted into the module's memory queue,
+ *          not persisted. Keep the local record until a fully validated
+ *          success callback. Redis disk durability depends on the server's
+ *          AOF/RDB configuration.
  *
- * @return  0 is queued. -1 is error or queue full.
+ * @return  0 is queued. -1 is validation error, duplicate pending request,
+ *          closed connection, or queue count/byte limit reached.
  */
 native redis_async_xadd(const stream[], const event_id[], const payload[], request_id = 0);
 
@@ -338,14 +351,34 @@ native redis_async_hget_string_on(connection_id, const key[], const field[], req
 native redis_async_hget_integer_on(connection_id, const key[], const field[], request_id = 0);
 
 /*
- * @note    Returns the current number of queued async commands.
+ * @note    Returns the number of accepted async commands that have not reached
+ *          a terminal worker result, including the command currently executing.
  */
 native redis_async_queue_size();
 
 /*
- * @note    Returns the queued async command count for one connection handle.
+ * @note    Returns the accepted async command bytes for the default handle,
+ *          including the command currently executing.
+ */
+native redis_async_queue_bytes();
+
+/*
+ * @note    Returns the cumulative number of result/connect callbacks discarded
+ *          because a bounded module result queue was full.
+ */
+native redis_async_dropped_results();
+
+/*
+ * @note    Returns the accepted, non-terminal async command count for one
+ *          connection handle, including the command currently executing.
  */
 native redis_async_queue_size_on(connection_id);
+
+/*
+ * @note    Returns accepted async command bytes for one connection handle,
+ *          including the command currently executing.
+ */
+native redis_async_queue_bytes_on(connection_id);
 
 /*
  * @note    Sets the maximum async queue depth. Default is 4096.
@@ -369,20 +402,24 @@ native redis_async_last_error(output[], maxlength);
 native redis_async_last_error_on(connection_id, output[], maxlength);
 
 /*
- * @note    Called on the AMXX main thread when an async GET/HGET result is ready.
+ * @note    Called on the AMXX main thread when a default-handle async
+ *          GET/HGET/XADD result is ready.
  *
- * @param   request_id  caller-defined id from redis_async_get_* / redis_async_hget_*.
- * @param   command[]   "get" or "hget".
- * @param   status      0 = value found, 1 = Redis nil/missing value, -1 = worker error.
+ * @param   request_id  Caller-defined id from the queued command.
+ * @param   command[]   "get", "hget", or "xadd".
+ * @param   status      0 = success/value found, 1 = Redis nil for reads,
+ *                      -1 = terminal worker/Redis error.
  * @param   key[]       key name.
- * @param   field[]     hash field for hget, empty for get.
- * @param   value[]     result value on status 0, error message on status -1.
+ * @param   field[]     Hash field for hget, event_id for xadd, empty for get.
+ * @param   value[]     Read value or Redis stream ID on status 0; error
+ *                      message on status -1.
  */
 forward Redis_Async_OnResult(request_id, command[], status, key[], field[], value[]);
 
 /*
- * @note    Called on the AMXX main thread when a handle-specific async GET/HGET
- *          result is ready.
+ * @note    Called on the AMXX main thread when a handle-specific async
+ *          GET/HGET/XADD result is ready. Its field/status/value contract is
+ *          identical to Redis_Async_OnResult.
  */
 forward Redis_Async_OnResultEx(connection_id, request_id, command[], status, key[], field[], value[]);
 

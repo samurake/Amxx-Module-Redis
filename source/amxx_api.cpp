@@ -86,8 +86,6 @@ void OnPluginsUnloaded()
 		return;
 	}
 
-	g_redis->bgsave();
-
 	delete g_redis;
 	g_redis = nullptr;
 }
