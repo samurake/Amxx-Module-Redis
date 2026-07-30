@@ -111,7 +111,7 @@ namespace
     cell bounded_cell_count(size_t value)
     {
         const size_t maximum =
-            static_cast<size_t>(std::numeric_limits<cell>::max());
+            static_cast<size_t>((std::numeric_limits<cell>::max)());
         return static_cast<cell>(value > maximum ? maximum : value);
     }
 
@@ -1510,12 +1510,12 @@ cell redis_async_dropped_results(AMX* amx, cell* params)
 {
     std::lock_guard<std::mutex> lock(g_async_results_mutex);
     const size_t maximum =
-        static_cast<size_t>(std::numeric_limits<cell>::max());
+        static_cast<size_t>((std::numeric_limits<cell>::max)());
     if (g_async_dropped_results >= maximum
         || g_async_dropped_connect_results
             >= maximum - g_async_dropped_results)
     {
-        return std::numeric_limits<cell>::max();
+        return (std::numeric_limits<cell>::max)();
     }
     return static_cast<cell>(
         g_async_dropped_results + g_async_dropped_connect_results
