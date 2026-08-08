@@ -74,7 +74,7 @@ Do not replace the live module until all checks pass on an isolated server:
 1. Confirm the artifact is a 32-bit i386 ELF shared object accepted by the
    host's file scanner.
 2. Start HLDS and verify `amxx modules` reports the Redis module as running.
-   Confirm it reports version `0.3.2-streams-hardened`.
+   Confirm it reports version `0.3.3-streams-hardened`.
 3. Record the Redis persistence policy (`appendonly`, `appendfsync`, RDB
    schedule, replication) and have the service owner approve the resulting
    recovery-point objective before calling the stream durable.
@@ -92,8 +92,10 @@ Do not replace the live module until all checks pass on an isolated server:
    `redis_xadd_status` exposes the latest result and callback counts
    to the protected server console so asynchronous completion can be checked
    without relying on log-tail timing.
-6. Keep the server running for at least one additional map change and confirm
-   the module unload/reload path does not hang or crash.
+6. Perform one additional map change, run `redis_xadd_validate` again, and
+   require a second `result=PASS` with all 260 callbacks delivered. This proves
+   the module replaced AMXX global-forward registrations for the new plugin
+   generation; a crash-free map change alone is not sufficient.
 7. Stop Redis, generate traffic, and verify queue count/bytes remain bounded
    and Pawn receives queue failures instead of blocking the game thread.
 8. Restore Redis and verify ordered recovery plus one correctly correlated

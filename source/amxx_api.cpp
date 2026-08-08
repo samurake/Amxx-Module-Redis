@@ -1,16 +1,16 @@
 #include "module.h"
+#include "async_forward_lifecycle.h"
 int ForwardRedisOnMessage = -1;
 int ForwardRedisAsyncOnResult = -1;
 int ForwardRedisAsyncOnConnect = -1;
 int ForwardRedisAsyncOnResultEx = -1;
 int ForwardRedisAsyncOnConnection = -1;
 int HasRedisOnMessage = -1;
-bool RedisSubscriberForwardRegistered = false;
-bool RedisAsyncForwardsRegistered = false;
+redis_async_lifecycle::ForwardRegistry RedisForwardRegistry;
 
 void redis_register_async_forwards()
 {
-	if (RedisAsyncForwardsRegistered)
+	if (!RedisForwardRegistry.should_register_async())
 	{
 		return;
 	}
@@ -19,7 +19,7 @@ void redis_register_async_forwards()
 	ForwardRedisAsyncOnConnect = MF_RegisterForward("Redis_Async_OnConnect", ET_IGNORE, FP_CELL, FP_CELL, FP_STRING, FP_DONE);
 	ForwardRedisAsyncOnResultEx = MF_RegisterForward("Redis_Async_OnResultEx", ET_IGNORE, FP_CELL, FP_CELL, FP_STRING, FP_CELL, FP_STRING, FP_STRING, FP_STRING, FP_DONE);
 	ForwardRedisAsyncOnConnection = MF_RegisterForward("Redis_Async_OnConnection", ET_IGNORE, FP_CELL, FP_CELL, FP_CELL, FP_STRING, FP_DONE);
-	RedisAsyncForwardsRegistered = true;
+	RedisForwardRegistry.mark_async_registered();
 }
 
 void OnAmxxAttach()
@@ -29,11 +29,12 @@ void OnAmxxAttach()
 
 void OnPluginsLoaded()
 {
+	RedisForwardRegistry.on_plugins_loaded();
 	isSubscriberRunning = false;
-	if (!RedisSubscriberForwardRegistered)
+	if (RedisForwardRegistry.should_register_subscriber())
 	{
 		ForwardRedisOnMessage = MF_RegisterForward("Redis_Subscriber_OnMessage", ET_STOP, FP_STRING, FP_STRING, FP_DONE);
-		RedisSubscriberForwardRegistered = true;
+		RedisForwardRegistry.mark_subscriber_registered();
 	}
 	redis_register_async_forwards();
 	HasRedisOnMessage = UTIL_CheckForPublic("Redis_Subscriber_OnMessage");
@@ -67,6 +68,10 @@ void stop_subscribe()
 
 void OnPluginsUnloading()
 {
+	// AMXX recreates plugin instances and their global-forward bindings on a
+	// map/plugin reload. Stop producing results and require fresh forward IDs
+	// for the next plugin generation.
+	RedisForwardRegistry.on_plugins_unloading();
 	redis_stop_async_worker();
 }
 
@@ -81,6 +86,13 @@ void OnPluginsUnloaded()
 	redis_stop_async_worker();
 
 	channels.clear();
+	ForwardRedisOnMessage = -1;
+	ForwardRedisAsyncOnResult = -1;
+	ForwardRedisAsyncOnConnect = -1;
+	ForwardRedisAsyncOnResultEx = -1;
+	ForwardRedisAsyncOnConnection = -1;
+	HasRedisOnMessage = -1;
+
 	if (!g_redis)
 	{
 		return;

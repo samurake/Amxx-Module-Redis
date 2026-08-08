@@ -1,4 +1,5 @@
 #include "../source/async_safety.h"
+#include "../source/async_forward_lifecycle.h"
 
 #include <cassert>
 #include <cstddef>
@@ -8,6 +9,32 @@ using redis_async_safety::XAddValidation;
 
 int main()
 {
+    {
+        redis_async_lifecycle::ForwardRegistry registry;
+        assert(!registry.plugins_loaded());
+        assert(!registry.should_register_async());
+        assert(!registry.should_register_subscriber());
+
+        registry.on_plugins_loaded();
+        assert(registry.plugins_loaded());
+        assert(registry.should_register_async());
+        assert(registry.should_register_subscriber());
+
+        registry.mark_async_registered();
+        registry.mark_subscriber_registered();
+        assert(!registry.should_register_async());
+        assert(!registry.should_register_subscriber());
+
+        registry.on_plugins_unloading();
+        assert(!registry.plugins_loaded());
+        assert(!registry.should_register_async());
+        assert(!registry.should_register_subscriber());
+
+        registry.on_plugins_loaded();
+        assert(registry.should_register_async());
+        assert(registry.should_register_subscriber());
+    }
+
     using namespace redis_async_safety;
 
     assert(validate_xadd(1, 1, 1, 0) == XAddValidation::Valid);

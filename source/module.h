@@ -34,8 +34,6 @@ extern int ForwardRedisAsyncOnConnect;
 extern int ForwardRedisAsyncOnResultEx;
 extern int ForwardRedisAsyncOnConnection;
 extern int HasRedisOnMessage;
-extern bool RedisSubscriberForwardRegistered;
-extern bool RedisAsyncForwardsRegistered;
 
 extern std::vector<std::string> channels;
 extern std::thread* th_subscriber;
