@@ -226,6 +226,14 @@ protected Redis connection cvars, then run this from the server console:
 redis_xadd_validate
 ```
 
+Then query `redis_xadd_status`; it reports `RUNNING`, `PASS`,
+`FAIL`, or `NOT_RUN` together with assertion and callback counts.
+
+On a Rank Transport host, leaving `redis_xadd_validation_host` empty reuses the
+protected `sar_redis_*` connection profile without copying its credentials into
+a second configuration block. Setting a dedicated validation host selects the
+validation plugin's isolated override profile instead.
+
 The plugin tests native input boundaries, exact-limit acceptance, duplicate
 pending request IDs, callback correlation, Redis stream-ID syntax, and the
 per-connection XADD rate limit. The module is not approved until the final

@@ -79,12 +79,19 @@ Do not replace the live module until all checks pass on an isolated server:
    schedule, replication) and have the service owner approve the resulting
    recovery-point objective before calling the stream durable.
 4. Compile and load `redis_xadd_validation_test.sma`, configure its protected
-   connection cvars, and run `redis_xadd_validate` from the server console.
+   connection cvars, and run `redis_xadd_validate` from the server console. If
+   `redis_xadd_validation_host` is left empty, the validation plugin reuses the
+   already-protected `sar_redis_host`, `sar_redis_port`,
+   `sar_redis_username`, and `sar_redis_password` profile atomically. Set a
+   dedicated validation host to use the isolated override profile instead.
 5. Require its final summary to report `result=PASS`. It automatically verifies
    empty and oversized input rejection, exact maximum-size acceptance, duplicate
    pending request rejection, callback correlation, stream ID syntax, queue
    accounting returning to zero, absence of callback drops, and the
    256-per-second admission limit.
+   `redis_xadd_status` exposes the latest result and callback counts
+   to the protected server console so asynchronous completion can be checked
+   without relying on log-tail timing.
 6. Keep the server running for at least one additional map change and confirm
    the module unload/reload path does not hang or crash.
 7. Stop Redis, generate traffic, and verify queue count/bytes remain bounded

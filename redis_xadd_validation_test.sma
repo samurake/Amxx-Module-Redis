@@ -37,6 +37,13 @@ new g_failures
 new g_boundary_callbacks
 new g_rate_callbacks
 new g_dropped_results_before
+new g_last_assertions
+new g_last_failures
+new g_validation_result = -1
+new g_last_boundary_status
+new g_last_rate_status
+new g_last_boundary_error[192]
+new g_last_rate_error[192]
 
 new g_max_stream[REDIS_ASYNC_XADD_MAX_STREAM_BYTES + 1]
 new g_too_large_stream[REDIS_ASYNC_XADD_MAX_STREAM_BYTES + 2]
@@ -51,10 +58,10 @@ public plugin_init()
 
     g_host_cvar = register_cvar(
         "redis_xadd_validation_host",
-        "127.0.0.1",
+        "",
         FCVAR_PROTECTED
     )
-    g_port_cvar = register_cvar("redis_xadd_validation_port", "6379")
+    g_port_cvar = register_cvar("redis_xadd_validation_port", "0")
     g_username_cvar = register_cvar(
         "redis_xadd_validation_username",
         "",
@@ -71,6 +78,12 @@ public plugin_init()
         "CommandRunValidation",
         ADMIN_RCON,
         "- run the bounded async XADD validation suite"
+    )
+    register_concmd(
+        "redis_xadd_status",
+        "CommandValidationStatus",
+        ADMIN_RCON,
+        "- print the latest bounded async XADD validation result"
     )
 
     FillBuffer(g_max_stream, REDIS_ASYNC_XADD_MAX_STREAM_BYTES, 's')
@@ -115,6 +128,52 @@ public CommandRunValidation(id, level, cid)
     return PLUGIN_HANDLED
 }
 
+public CommandValidationStatus(id, level, cid)
+{
+    if(id && !cmd_access(id, level, cid, 1))
+    {
+        return PLUGIN_HANDLED
+    }
+
+    new result_text[16]
+    if(g_validation_running)
+    {
+        copy(result_text, charsmax(result_text), "RUNNING")
+    }
+    else if(g_validation_result > 0)
+    {
+        copy(result_text, charsmax(result_text), "PASS")
+    }
+    else if(g_validation_result == 0)
+    {
+        copy(result_text, charsmax(result_text), "FAIL")
+    }
+    else
+    {
+        copy(result_text, charsmax(result_text), "NOT_RUN")
+    }
+
+    console_print(
+        id,
+        "[Redis XADD Validation][STATUS] result=%s assertions=%d failures=%d boundary=%d/4 rate=%d/%d",
+        result_text,
+        g_validation_running ? g_assertions : g_last_assertions,
+        g_validation_running ? g_failures : g_last_failures,
+        g_boundary_callbacks,
+        g_rate_callbacks,
+        RATE_ACCEPTED_COUNT
+    )
+    console_print(
+        id,
+        "[Redis XADD Validation][CONNECTIONS] boundary_status=%d boundary_error=%s rate_status=%d rate_error=%s",
+        g_last_boundary_status,
+        g_last_boundary_error[0] ? g_last_boundary_error : "none",
+        g_last_rate_status,
+        g_last_rate_error[0] ? g_last_rate_error : "none"
+    )
+    return PLUGIN_HANDLED
+}
+
 stock StartValidation(console_id)
 {
     CloseValidationHandles()
@@ -129,12 +188,51 @@ stock StartValidation(console_id)
     g_boundary_callbacks = 0
     g_rate_callbacks = 0
     g_dropped_results_before = redis_async_dropped_results()
+    g_validation_result = -1
+    g_last_boundary_status = 0
+    g_last_rate_status = 0
+    g_last_boundary_error[0] = '^0'
+    g_last_rate_error[0] = '^0'
 
     new host[64], username[64], password[128]
     get_pcvar_string(g_host_cvar, host, charsmax(host))
     get_pcvar_string(g_username_cvar, username, charsmax(username))
     get_pcvar_string(g_password_cvar, password, charsmax(password))
     new port = get_pcvar_num(g_port_cvar)
+
+    // The normal test-server path already owns protected sar_redis_* cvars.
+    // Reuse them as one atomic connection profile when no dedicated validation
+    // host was configured, avoiding a second plaintext credential surface.
+    new bool:using_rank_transport_profile = host[0] == '^0'
+    if(using_rank_transport_profile)
+    {
+        ReadNamedCvarString("sar_redis_host", host, charsmax(host))
+        ReadNamedCvarString(
+            "sar_redis_username",
+            username,
+            charsmax(username)
+        )
+        ReadNamedCvarString(
+            "sar_redis_password",
+            password,
+            charsmax(password)
+        )
+        port = ReadNamedCvarNumber("sar_redis_port", 6379)
+    }
+    else if(port <= 0)
+    {
+        port = 6379
+    }
+
+    if(!host[0])
+    {
+        ValidationFailure(
+            "no validation or sar_redis connection profile is configured",
+            0
+        )
+        FinishValidation()
+        return
+    }
 
     g_boundary_handle = redis_async_open(
         host,
@@ -170,11 +268,37 @@ stock StartValidation(console_id)
     }
 
     server_print(
-        "[Redis XADD Validation] started boundary_handle=%d rate_handle=%d",
+        "[Redis XADD Validation] started boundary_handle=%d rate_handle=%d profile=%s",
         g_boundary_handle,
-        g_rate_handle
+        g_rate_handle,
+        using_rank_transport_profile ? "rank-transport" : "dedicated"
     )
     set_task(30.0, "ValidationTimeout", 92001)
+}
+
+stock ReadNamedCvarString(const name[], output[], maxlength)
+{
+    new pointer = get_cvar_pointer(name)
+    if(pointer)
+    {
+        get_pcvar_string(pointer, output, maxlength)
+    }
+    else
+    {
+        output[0] = '^0'
+    }
+}
+
+stock ReadNamedCvarNumber(const name[], fallback)
+{
+    new pointer = get_cvar_pointer(name)
+    if(!pointer)
+    {
+        return fallback
+    }
+
+    new value = get_pcvar_num(pointer)
+    return value > 0 ? value : fallback
 }
 
 public Redis_Async_OnConnection(
@@ -531,6 +655,7 @@ public ValidationTimeout()
         return
     }
 
+    CaptureConnectionDiagnostics()
     ValidationFailure("validation timed out waiting for callbacks", 0)
     server_print(
         "[Redis XADD Validation] callbacks boundary=%d/4 rate=%d/%d",
@@ -539,6 +664,28 @@ public ValidationTimeout()
         RATE_ACCEPTED_COUNT
     )
     FinishValidation()
+}
+
+stock CaptureConnectionDiagnostics()
+{
+    if(g_boundary_handle > 0)
+    {
+        g_last_boundary_status = redis_async_status(g_boundary_handle)
+        redis_async_last_error_on(
+            g_boundary_handle,
+            g_last_boundary_error,
+            charsmax(g_last_boundary_error)
+        )
+    }
+    if(g_rate_handle > 0)
+    {
+        g_last_rate_status = redis_async_status(g_rate_handle)
+        redis_async_last_error_on(
+            g_rate_handle,
+            g_last_rate_error,
+            charsmax(g_last_rate_error)
+        )
+    }
 }
 
 stock FinishValidation()
@@ -555,6 +702,11 @@ stock FinishValidation()
         g_failures,
         g_failures == 0 ? "PASS" : "FAIL"
     )
+
+    CaptureConnectionDiagnostics()
+    g_last_assertions = g_assertions
+    g_last_failures = g_failures
+    g_validation_result = g_failures == 0 ? 1 : 0
 
     g_validation_running = false
     CloseValidationHandles()
