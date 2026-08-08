@@ -103,7 +103,7 @@ jobs:
             exit 1
           fi
           readelf --dyn-syms --wide "$artifact" | grep -F "__stack_chk_fail"
-          strings -a "$artifact" | grep -F "0.3.1-streams-hardened"
+          strings -a "$artifact" | grep -F "0.3.2-streams-hardened"
 
       - name: Upload Linux artifacts
         if: startsWith(runner.os, 'Linux') && success()

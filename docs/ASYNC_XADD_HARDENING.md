@@ -74,7 +74,7 @@ Do not replace the live module until all checks pass on an isolated server:
 1. Confirm the artifact is a 32-bit i386 ELF shared object accepted by the
    host's file scanner.
 2. Start HLDS and verify `amxx modules` reports the Redis module as running.
-   Confirm it reports version `0.3.1-streams-hardened`.
+   Confirm it reports version `0.3.2-streams-hardened`.
 3. Record the Redis persistence policy (`appendonly`, `appendfsync`, RDB
    schedule, replication) and have the service owner approve the resulting
    recovery-point objective before calling the stream durable.

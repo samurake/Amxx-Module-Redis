@@ -3,7 +3,7 @@
 #include <redis>
 
 #define PLUGIN "Redis XADD Validation"
-#define VERSION "0.3.1"
+#define VERSION "0.3.2"
 #define AUTHOR "samurake"
 
 #define CONNECT_BOUNDARY_REQUEST 9001

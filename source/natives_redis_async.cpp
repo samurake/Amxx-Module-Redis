@@ -1111,6 +1111,12 @@ namespace
             ))
             {
                 set_global_async_error(error);
+                std::shared_ptr<AsyncConnection> connection =
+                    find_connection(connection_id);
+                if (connection)
+                {
+                    set_connection_error(connection, error);
+                }
                 return -1;
             }
 
@@ -1121,14 +1127,26 @@ namespace
         }
         catch (const std::exception& exception)
         {
-            set_global_async_error(
-                bounded_async_error(exception.what())
-            );
+            const std::string error = bounded_async_error(exception.what());
+            set_global_async_error(error);
+            std::shared_ptr<AsyncConnection> connection =
+                find_connection(connection_id);
+            if (connection)
+            {
+                set_connection_error(connection, error);
+            }
             return -1;
         }
         catch (...)
         {
-            set_global_async_error("unknown xadd enqueue error");
+            const std::string error = "unknown xadd enqueue error";
+            set_global_async_error(error);
+            std::shared_ptr<AsyncConnection> connection =
+                find_connection(connection_id);
+            if (connection)
+            {
+                set_connection_error(connection, error);
+            }
             return -1;
         }
     }

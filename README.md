@@ -2,7 +2,7 @@
 ### Description:
 > This is a module for amxmodx that allows operations from HLDS to the Redis data store.
 
-Current fork version: `0.3.1-streams-hardened`.
+Current fork version: `0.3.2-streams-hardened`.
 
 Original author: Aoi.Kagase. Async queue maintainer: samurake.
 
