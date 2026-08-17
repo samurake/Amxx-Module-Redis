@@ -25,7 +25,11 @@ RUN mkdir -p /opt/steamcmd /opt/hlds \
           +app_update 90 validate \
           +quit && break; \
       done \
-    && test -x /opt/hlds/hlds_run
+    && test -x /opt/hlds/hlds_run \
+    && test -r /opt/steamcmd/linux32/steamclient.so \
+    && mkdir -p /root/.steam/sdk32 \
+    && cp /opt/steamcmd/linux32/steamclient.so /opt/hlds/steamclient.so \
+    && cp /opt/steamcmd/linux32/steamclient.so /root/.steam/sdk32/steamclient.so
 
 RUN curl -fsSL \
       "https://github.com/dreamstalker/rehlds/releases/download/${REHLDS_VERSION}/rehlds-bin-${REHLDS_VERSION}.zip" \

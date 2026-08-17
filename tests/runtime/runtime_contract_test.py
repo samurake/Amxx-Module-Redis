@@ -27,6 +27,7 @@ class RuntimeGateContractTest(unittest.TestCase):
         self.assertIn("METAMOD_VERSION=1.3.0.149", dockerfile)
         self.assertIn("AMXX_BUILD=5467", dockerfile)
         self.assertIn("chmod +x /opt/hlds/hlds_linux", dockerfile)
+        self.assertIn("/root/.steam/sdk32/steamclient.so", dockerfile)
         self.assertIn('["stop", "redis"]', runner)
         self.assertIn('["start", "redis"]', runner)
         self.assertIn("outage_backpressure_and_recovery", runner)
