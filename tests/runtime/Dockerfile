@@ -23,9 +23,12 @@ RUN mkdir -p /opt/steamcmd /opt/hlds \
           +login anonymous \
           +app_set_config 90 mod cstrike \
           +app_update 90 -beta steam_legacy validate \
-          +quit || exit 1; \
+          +quit || true; \
       done \
     && test -x /opt/hlds/hlds_run \
+    && test -x /opt/hlds/hlds_linux \
+    && test -r /opt/hlds/engine_i486.so \
+    && test -r /opt/hlds/filesystem_stdio.so \
     && test -r /opt/steamcmd/linux32/steamclient.so \
     && mkdir -p /root/.steam/sdk32 \
     && cp /opt/steamcmd/linux32/steamclient.so /opt/hlds/steamclient.so \
