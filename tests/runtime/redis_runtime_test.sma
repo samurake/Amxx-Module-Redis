@@ -11,6 +11,7 @@
 #define FLOOD_REQUEST_BASE 43000
 #define FLOOD_COUNT 128
 #define QUEUE_LIMIT 32
+#define DEFAULT_QUEUE_LIMIT 4096
 
 new g_host_cvar
 new g_port_cvar
@@ -29,8 +30,8 @@ public plugin_init()
     register_concmd("redis_runtime_probe", "CommandProbe", ADMIN_RCON)
     register_concmd("redis_runtime_backpressure", "CommandBackpressure", ADMIN_RCON)
     register_concmd("redis_runtime_status", "CommandStatus", ADMIN_RCON)
+    register_concmd("redis_runtime_restore_defaults", "CommandRestoreDefaults", ADMIN_RCON)
 
-    redis_async_set_queue_limit(QUEUE_LIMIT)
     OpenConnection()
 }
 
@@ -96,6 +97,8 @@ public CommandBackpressure(id, level, cid)
     g_callback_failures = 0
     g_drops_before = redis_async_dropped_results()
 
+    new limit_result = redis_async_set_queue_limit(QUEUE_LIMIT)
+
     new event_id[48]
     new payload[96]
     for(new index = 0; index < FLOOD_COUNT; index++)
@@ -121,7 +124,8 @@ public CommandBackpressure(id, level, cid)
 
     new queue_size = redis_async_queue_size_on(g_handle)
     new queue_bytes = redis_async_queue_bytes_on(g_handle)
-    new bool:passed = g_rejected > 0
+    new bool:passed = limit_result == 0
+        && g_rejected > 0
         && g_accepted <= QUEUE_LIMIT
         && queue_size <= QUEUE_LIMIT
         && queue_bytes <= REDIS_ASYNC_DEFAULT_QUEUE_BYTE_LIMIT
@@ -133,6 +137,22 @@ public CommandBackpressure(id, level, cid)
         g_rejected,
         queue_size,
         queue_bytes
+    )
+    return PLUGIN_HANDLED
+}
+
+public CommandRestoreDefaults(id, level, cid)
+{
+    if(id && !cmd_access(id, level, cid, 1))
+    {
+        return PLUGIN_HANDLED
+    }
+
+    new result = redis_async_set_queue_limit(DEFAULT_QUEUE_LIMIT)
+    server_print(
+        "[Redis Runtime][DEFAULTS] result=%s queue_limit=%d",
+        result == 0 ? "PASS" : "FAIL",
+        DEFAULT_QUEUE_LIMIT
     )
     return PLUGIN_HANDLED
 }

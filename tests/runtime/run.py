@@ -119,6 +119,8 @@ def main() -> int:
             raise RuntimeError("Redis queue did not drain cleanly after reconnection")
         phases.append({"name": "outage_backpressure_and_recovery", "status": "passed"})
 
+        rcon("redis_runtime_restore_defaults", env)
+        wait_for_log(r"\[Redis Runtime\]\[DEFAULTS\] result=PASS", env)
         rcon("changelevel de_dust2")
         time.sleep(5)
         rcon("redis_xadd_validate")

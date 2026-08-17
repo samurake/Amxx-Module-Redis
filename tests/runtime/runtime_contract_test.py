@@ -34,6 +34,7 @@ class RuntimeGateContractTest(unittest.TestCase):
         self.assertIn("chmod +x /opt/hlds/hlds_linux", dockerfile)
         self.assertIn("/root/.steam/sdk32/steamclient.so", dockerfile)
         self.assertIn("request=42000 status=0 error=none", runner)
+        self.assertIn("redis_runtime_restore_defaults", runner)
         self.assertIn('["stop", "redis"]', runner)
         self.assertIn('["start", "redis"]', runner)
         self.assertIn("outage_backpressure_and_recovery", runner)
