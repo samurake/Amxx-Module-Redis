@@ -51,6 +51,7 @@ RUN curl -fsSL \
       "https://www.amxmodx.org/amxxdrop/1.10/amxmodx-1.10.0-git${AMXX_BUILD}-cstrike-linux.tar.gz" \
       -o /tmp/amxx-cstrike.tar.gz \
     && tar -xzf /tmp/amxx-cstrike.tar.gz -C /opt/hlds/cstrike \
+    && chmod +x /opt/hlds/hlds_linux /opt/hlds/hlds_run \
     && rm -rf /tmp/rehlds* /tmp/regamedll* /tmp/metamod* /tmp/amxx-*
 
 WORKDIR /opt/hlds

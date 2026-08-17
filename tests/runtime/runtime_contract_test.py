@@ -26,6 +26,7 @@ class RuntimeGateContractTest(unittest.TestCase):
         self.assertIn("REGAMEDLL_VERSION=5.30.0.814", dockerfile)
         self.assertIn("METAMOD_VERSION=1.3.0.149", dockerfile)
         self.assertIn("AMXX_BUILD=5467", dockerfile)
+        self.assertIn("chmod +x /opt/hlds/hlds_linux", dockerfile)
         self.assertIn('["stop", "redis"]', runner)
         self.assertIn('["start", "redis"]', runner)
         self.assertIn("outage_backpressure_and_recovery", runner)
