@@ -53,6 +53,10 @@ jobs:
             tests/async_safety_test.cpp -o /tmp/redis_async_safety_test
           /tmp/redis_async_safety_test
 
+      - name: Test HLDS runtime gate contract (Linux)
+        if: startsWith(runner.os, 'Linux')
+        run: python3 -m unittest tests/runtime/runtime_contract_test.py
+
       - name: Install AMBuild (Linux)
         if: startsWith(runner.os, 'Linux')
         run: |
@@ -105,6 +109,22 @@ jobs:
           readelf --dyn-syms --wide "$artifact" | grep -F "__stack_chk_fail"
           strings -a "$artifact" | grep -F "0.3.3-streams-hardened"
 
+      - name: Validate module in HLDS with Redis fault injection
+        if: startsWith(runner.os, 'Linux')
+        run: |
+          python3 tests/runtime/run.py \
+            --artifact build/redis_amxx_i386/redis_amxx_i386.so \
+            --report artifacts/redis-runtime-report.json
+
+      - name: Upload HLDS runtime report
+        if: startsWith(runner.os, 'Linux') && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-hlds-runtime-${{ github.sha }}
+          path: artifacts/redis-runtime-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload Linux artifacts
         if: startsWith(runner.os, 'Linux') && success()
         uses: actions/upload-artifact@v4
@@ -124,6 +144,10 @@ jobs:
         run: |
           cl /nologo /std:c++14 /W4 /WX /EHsc tests\async_safety_test.cpp /Fe:redis_async_safety_test.exe
           redis_async_safety_test.exe
+
+      - name: Test HLDS runtime gate contract (Windows)
+        if: startsWith(runner.os, 'Windows')
+        run: python -m unittest tests/runtime/runtime_contract_test.py
 
       - name: Install Windows dependencies
         if: startsWith(runner.os, 'Windows')

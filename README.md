@@ -240,6 +240,24 @@ per-connection XADD rate limit. The module is not approved until the final
 validation line reports `result=PASS` and the remaining outage/AOF checks in
 the hardening guide pass.
 
+### Automated HLDS runtime gate
+
+The Linux CI build now loads the freshly built artifact in an isolated
+ReHLDS/ReGameDLL/Metamod-R/AMXX server instead of treating a successful linker
+run as sufficient validation. `tests/runtime/run.py` executes the boundary
+suite, stops Redis underneath HLDS, proves command-count and byte backpressure,
+restarts Redis, requires every accepted callback to drain without drops, and
+runs the boundary suite again after a map change.
+
+The test network publishes no ports and uses only disposable credentials and
+volumes. CI uploads the machine-readable `redis-hlds-runtime-<commit>` report;
+that report and the normal build job must pass before an artifact is released.
+Run the same gate on a Docker-capable workstation with:
+
+```text
+python tests/runtime/run.py --artifact build/redis_amxx_i386/redis_amxx_i386.so
+```
+
 ### Async stress test
 
 `redis_async_stress_test.sma` opens the default legacy connection plus two

@@ -1,0 +1,36 @@
+name: ${REDIS_RUNTIME_PROJECT:-redis-module-runtime}
+
+services:
+  redis:
+    image: redis:7.4.1-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    networks: [runtime]
+
+  hlds:
+    build:
+      context: ../..
+      dockerfile: tests/runtime/Dockerfile
+    environment:
+      RCON_PASSWORD: runtime-only-password
+    volumes:
+      - ${REDIS_MODULE_PATH:?REDIS_MODULE_PATH is required}:/module/redis_amxx_i386.so:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [runtime]
+
+  controller:
+    image: python:3.12-alpine
+    working_dir: /tests
+    volumes:
+      - ./:/tests:ro
+    networks: [runtime]
+
+networks:
+  runtime:
+    internal: true

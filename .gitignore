@@ -4,3 +4,5 @@
 /ambuild/
 /build/
 /obj-*/
+__pycache__/
+*.py[cod]
