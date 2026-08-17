@@ -22,8 +22,8 @@ RUN mkdir -p /opt/steamcmd /opt/hlds \
           +force_install_dir /opt/hlds \
           +login anonymous \
           +app_set_config 90 mod cstrike \
-          +app_update 90 validate \
-          +quit && break; \
+          +app_update 90 -beta steam_legacy validate \
+          +quit || exit 1; \
       done \
     && test -x /opt/hlds/hlds_run \
     && test -r /opt/steamcmd/linux32/steamclient.so \

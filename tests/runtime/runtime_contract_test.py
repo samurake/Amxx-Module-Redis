@@ -26,6 +26,8 @@ class RuntimeGateContractTest(unittest.TestCase):
         self.assertIn("REGAMEDLL_VERSION=5.30.0.814", dockerfile)
         self.assertIn("METAMOD_VERSION=1.3.0.149", dockerfile)
         self.assertIn("AMXX_BUILD=5467", dockerfile)
+        self.assertEqual(dockerfile.count("+app_update 90 -beta steam_legacy validate"), 1)
+        self.assertIn("for attempt in 1 2 3", dockerfile)
         self.assertIn("chmod +x /opt/hlds/hlds_linux", dockerfile)
         self.assertIn("/root/.steam/sdk32/steamclient.so", dockerfile)
         self.assertIn('["stop", "redis"]', runner)
