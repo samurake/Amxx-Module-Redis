@@ -121,9 +121,9 @@ def main() -> int:
 
         rcon("redis_runtime_restore_defaults", env)
         wait_for_log(r"\[Redis Runtime\]\[DEFAULTS\] result=PASS", env)
-        rcon("changelevel de_dust2")
+        rcon("changelevel de_dust2", env)
         time.sleep(5)
-        rcon("redis_xadd_validate")
+        rcon("redis_xadd_validate", env)
         wait_for_log(
             r"\[Redis XADD Validation\]\[SUMMARY\].*result=PASS",
             env,

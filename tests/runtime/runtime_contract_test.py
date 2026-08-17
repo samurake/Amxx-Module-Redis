@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 import unittest
 
@@ -6,6 +7,20 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RuntimeGateContractTest(unittest.TestCase):
+    def test_every_rcon_invocation_passes_the_runtime_environment(self) -> None:
+        runner = (ROOT / "tests/runtime/run.py").read_text(encoding="utf-8")
+        tree = ast.parse(runner)
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "rcon"
+        ]
+
+        self.assertGreaterEqual(len(calls), 8)
+        self.assertTrue(all(len(call.args) == 2 for call in calls))
+
     def test_gate_loads_the_real_artifact_and_is_network_isolated(self) -> None:
         compose = (ROOT / "tests/runtime/compose.yml").read_text(encoding="utf-8")
         entrypoint = (ROOT / "tests/runtime/entrypoint.sh").read_text(encoding="utf-8")
