@@ -86,7 +86,11 @@ def main() -> int:
 
     try:
         compose(["up", "-d", "--build", "redis", "hlds"], env, timeout=1800)
-        wait_for_log(r"AMX Mod X.*initialized", env, timeout=120)
+        wait_for_log(
+            r"\[Redis Runtime\]\[CONNECTION\] request=42000 status=0 error=none",
+            env,
+            timeout=120,
+        )
         rcon("amxx modules", env)
 
         rcon("redis_runtime_probe", env)
